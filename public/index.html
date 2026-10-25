@@ -7,6 +7,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Cairo', sans-serif; background-color: #0b0e14; color: #f1f5f9; }
@@ -167,11 +168,19 @@
         </div>
       </div>
 
-      <!-- 5. الشارت الذكي -->
+      <!-- 5. قسم الشارت المزدوج: شارت TradingView الرسمي المباشر + شارت البوت الذكي -->
       <div class="card p-5">
-        <div class="flex flex-wrap justify-between items-center mb-4 gap-2">
-          <h2 class="text-lg font-bold text-white">📈 الشارت المؤسسي (يرسم الصفقات المؤكدة فقط + Volume POC + Fibonacci 61.8%)</h2>
-          <div class="flex flex-wrap items-center gap-3 text-xs font-bold">
+        <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="switchChartMode('tv')" id="tabTvBtn" class="px-4 py-2 rounded-lg text-sm font-black bg-blue-600 text-white transition shadow">
+              📊 شارت TradingView الرسمي المباشر (Live)
+            </button>
+            <button onclick="switchChartMode('ai')" id="tabAiBtn" class="px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition">
+              🤖 شارت البوت الذكي (خطوط POC + الفيبو + Backtest)
+            </button>
+          </div>
+
+          <div id="aiLegend" class="hidden flex-wrap items-center gap-3 text-xs font-bold">
             <span class="text-blue-400">━ الدخول</span>
             <span class="text-red-400">┅ SL</span>
             <span class="text-emerald-400">━ TP1/TP2</span>
@@ -179,7 +188,14 @@
             <span class="text-yellow-300">┅ فيبو 61.8%</span>
           </div>
         </div>
-        <div id="ai_custom_chart" class="w-full h-[520px] rounded-xl overflow-hidden border border-gray-800 relative"></div>
+
+        <!-- حاوية شارت TradingView الرسمي -->
+        <div id="tv_chart_wrapper" class="w-full h-[540px] rounded-xl overflow-hidden border border-gray-800">
+          <div id="tradingview_official_widget" class="w-full h-full"></div>
+        </div>
+
+        <!-- حاوية شارت البوت الذكي -->
+        <div id="ai_custom_chart" class="hidden w-full h-[520px] rounded-xl overflow-hidden border border-gray-800 relative"></div>
       </div>
 
       <!-- 6. مستويات الصفقة وحاسبة اللوت -->
@@ -297,11 +313,77 @@
   <script>
     let currentSymbol = 'XAUUSD';
     let currentTimeframe = '15m';
+    let currentChartMode = 'tv'; // 'tv' لشارت TradingView الرسمي أو 'ai' لشارت البوت
     let lastAnalysisData = null;
     let showBacktestMarkers = false;
     let chartInstance = null;
     let candleSeries = null;
     const socket = io();
+
+    const TV_SYMBOL_MAP = {
+      'XAUUSD': 'OANDA:XAUUSD',
+      'EURUSD': 'OANDA:EURUSD',
+      'GBPUSD': 'OANDA:GBPUSD',
+      'USDJPY': 'OANDA:USDJPY'
+    };
+
+    const TV_INTERVAL_MAP = {
+      '5m': '5',
+      '15m': '15',
+      '1h': '60',
+      '1d': 'D'
+    };
+
+    function renderTradingViewWidget() {
+      const container = document.getElementById('tradingview_official_widget');
+      if (!container) return;
+      container.innerHTML = '';
+
+      new TradingView.widget({
+        "autosize": true,
+        "symbol": TV_SYMBOL_MAP[currentSymbol] || "OANDA:XAUUSD",
+        "interval": TV_INTERVAL_MAP[currentTimeframe] || "15",
+        "timezone": "Africa/Cairo",
+        "theme": "dark",
+        "style": "1",
+        "locale": "ar_AE",
+        "toolbar_bg": "#11151e",
+        "enable_publishing": false,
+        "hide_side_toolbar": false,
+        "allow_symbol_change": true,
+        "studies": [
+          "MASimple@tv-basicstudies",
+          "RSI@tv-basicstudies"
+        ],
+        "container_id": "tradingview_official_widget"
+      });
+    }
+
+    function switchChartMode(mode) {
+      currentChartMode = mode;
+      const tvWrapper = document.getElementById('tv_chart_wrapper');
+      const aiWrapper = document.getElementById('ai_custom_chart');
+      const aiLegend = document.getElementById('aiLegend');
+      const tabTvBtn = document.getElementById('tabTvBtn');
+      const tabAiBtn = document.getElementById('tabAiBtn');
+
+      if (mode === 'tv') {
+        tvWrapper.classList.remove('hidden');
+        aiWrapper.classList.add('hidden');
+        aiLegend.classList.add('hidden');
+        tabTvBtn.className = "px-4 py-2 rounded-lg text-sm font-black bg-blue-600 text-white transition shadow";
+        tabAiBtn.className = "px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
+        renderTradingViewWidget();
+      } else {
+        tvWrapper.classList.add('hidden');
+        aiWrapper.classList.remove('hidden');
+        aiLegend.classList.remove('hidden');
+        aiLegend.classList.add('flex');
+        tabAiBtn.className = "px-4 py-2 rounded-lg text-sm font-black bg-emerald-500 text-black transition shadow";
+        tabTvBtn.className = "px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
+        if (lastAnalysisData) renderAnnotatedChart(lastAnalysisData);
+      }
+    }
 
     function extractNumber(str) {
       if (!str) return null;
@@ -347,7 +429,7 @@
       btn.innerText = showBacktestMarkers
         ? "✅ إخفاء أسهم الـ Backtest من الشارت"
         : "🧪 إظهار الصفقات المؤكدة (Backtest) على الشارت";
-      if (lastAnalysisData) renderAnnotatedChart(lastAnalysisData);
+      switchChartMode('ai');
     }
 
     async function runMarketScanner() {
@@ -393,7 +475,7 @@
       }
 
       chartInstance = LightweightCharts.createChart(container, {
-        width: container.clientWidth,
+        width: container.clientWidth || 800,
         height: 520,
         layout: { background: { type: 'solid', color: '#0e121b' }, textColor: '#cbd5e1' },
         grid: { vertLines: { color: '#1e2436' }, horzLines: { color: '#1e2436' } },
@@ -415,7 +497,6 @@
       formattedCandles.sort((a, b) => a.time - b.time);
       candleSeries.setData(formattedCandles);
 
-      // لا نرسم على الشموع إلا الصفقات المؤكدة ("صعود قوي" أو "هبوط قوي")
       if (showBacktestMarkers && data.backtestReport?.markers) {
         candleSeries.setMarkers(data.backtestReport.markers);
       } else if (formattedCandles.length > 0 && (data.signal === 'صعود قوي' || data.signal === 'هبوط قوي')) {
@@ -478,7 +559,11 @@
         document.getElementById('loader').classList.add('hidden');
         document.getElementById('dashboard').classList.remove('hidden');
         renderDashboard(data);
-        renderAnnotatedChart(data);
+        if (currentChartMode === 'tv') {
+          renderTradingViewWidget();
+        } else {
+          renderAnnotatedChart(data);
+        }
       } catch (err) {
         alert("⚠️ تنبيه: " + err.message);
         if (lastAnalysisData) document.getElementById('dashboard').classList.remove('hidden');
@@ -581,7 +666,6 @@
       calculateLotSize();
     }
 
-    // دالة مسح وتصفير السجل بضغطة زر
     async function clearTradesLedger() {
       await fetch('/api/clear-ledger', { method: 'POST' });
       fetchAnalysis(true);

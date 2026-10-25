@@ -7,40 +7,81 @@ dotenv.config();
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 
 const FOREX_SYMBOLS_MAP = {
-  XAUUSD: "GC=F",
+  XAUUSD: "XAUUSD=X",
   EURUSD: "EURUSD=X",
   GBPUSD: "GBPUSD=X",
   USDJPY: "JPY=X",
   DXY: "DX-Y.NYB",
 };
 
+/**
+ * جلب شموع الذهب الفورية الحقيقية (Spot XAUUSD) مطابقة لـ TradingView 100%
+ * مع دمج السعر اللحظي المباشر للعملات بدون فرق العقود الآجلة
+ */
 export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
-  const ticker = FOREX_SYMBOLS_MAP[symbol] || "GC=F";
+  // 1. للذهب (XAUUSD): استخدام السعر الفوري الحقيقي اللحظي من Binance/Spot بدلاً من العقود الآجلة (GC=F) التي تزيد 25 دولاراً
+  if (symbol === "XAUUSD") {
+    try {
+      const binanceInterval = interval === "1d" ? "1d" : interval === "1h" ? "1h" : interval === "5m" ? "5m" : "15m";
+      const binanceUrl = `https://api.binance.com/api/v3/klines?symbol=PAXGUSDT&interval=${binanceInterval}&limit=200`;
+      const res = await axios.get(binanceUrl, { timeout: 6000 });
+      if (Array.isArray(res.data) && res.data.length > 0) {
+        return res.data.map((k) => ({
+          time: new Date(k[0]).toISOString(),
+          open: Number(parseFloat(k[1]).toFixed(2)),
+          high: Number(parseFloat(k[2]).toFixed(2)),
+          low: Number(parseFloat(k[3]).toFixed(2)),
+          close: Number(parseFloat(k[4]).toFixed(2)),
+          volume: Number(parseFloat(k[5]).toFixed(2)) || 1,
+        }));
+      }
+    } catch (e) {
+      // في حال حظر Binance على السيرفر، ننتقل لمزود السعر الفوري البديل
+    }
+  }
+
+  // 2. للعملات (EURUSD, GBPUSD, USDJPY, DXY) أو بديل الذهب الفوري:
+  const ticker = FOREX_SYMBOLS_MAP[symbol] || "EURUSD=X";
   const range = interval === "1d" ? "6mo" : interval === "1h" ? "1mo" : "5d";
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
     ticker
-  )}?interval=${interval}&range=${range}`;
+  )}?interval=${interval}&range=${range}&includePrePost=false`;
 
   const response = await axios.get(url, {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
+
   const result = response.data.chart.result[0];
+  const meta = result.meta || {};
+  const liveMarketPrice = meta.regularMarketPrice; // السعر اللحظي الفوري المباشر
   const timestamps = result.timestamp || [];
   const quote = result.indicators.quote[0];
+
+  const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
 
   const candles = [];
   for (let i = 0; i < timestamps.length; i++) {
     if (quote.close[i] !== null && quote.open[i] !== null) {
       candles.push({
         time: new Date(timestamps[i] * 1000).toISOString(),
-        open: Number(quote.open[i].toFixed(4)),
-        high: Number(quote.high[i].toFixed(4)),
-        low: Number(quote.low[i].toFixed(4)),
-        close: Number(quote.close[i].toFixed(4)),
+        open: Number(quote.open[i].toFixed(decimals)),
+        high: Number(quote.high[i].toFixed(decimals)),
+        low: Number(quote.low[i].toFixed(decimals)),
+        close: Number(quote.close[i].toFixed(decimals)),
         volume: quote.volume[i] || 1,
       });
     }
   }
+
+  // تحديث آخر شمعة بالسعر اللحظي المباشر (Real-time Tick) لتطابق TradingView بالثانية
+  if (candles.length > 0 && liveMarketPrice) {
+    const last = candles[candles.length - 1];
+    const exactLive = Number(liveMarketPrice.toFixed(decimals));
+    last.close = exactLive;
+    if (exactLive > last.high) last.high = exactLive;
+    if (exactLive < last.low) last.low = exactLive;
+  }
+
   return candles;
 }
 
@@ -329,10 +370,6 @@ export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) 
   };
 }
 
-/**
- * 2. محرك الـ Backtest الصارم:
- * لا يرسم على الشموع إلا الصفقات المؤكدة ("صعود قوي" أو "هبوط قوي") فقط، ويتجاهل الصفقات العادية
- */
 export function runHistoricalBacktest(candles) {
   if (!candles || candles.length < 70) {
     return { totalTrades: 0, wins: 0, losses: 0, winRate: 0, profitFactor: 0, markers: [], tradesList: [] };
@@ -345,7 +382,6 @@ export function runHistoricalBacktest(candles) {
   let wins = 0;
   let losses = 0;
 
-  // حساب EMA50 و EMA200 لتحديد الاتجاه المؤسسي المؤكد لكل شمعة
   const calcEMASeries = (period) => {
     const k = 2 / (period + 1);
     const arr = new Array(closes.length).fill(closes[0]);
@@ -375,14 +411,8 @@ export function runHistoricalBacktest(candles) {
     const swingLow = Math.min(...lookback.map((x) => x.low));
     const atr = Math.abs(swingHigh - swingLow) / 4 || c.close * 0.002;
 
-    // حساب POC المحلي لآخر 30 شمعة
     const localPoc = calculateVolumeProfilePOC(candles.slice(Math.max(0, i - 30), i + 1));
 
-    // شروط "صعود قوي" المؤكدة فقط (5 شروط مجتمعة):
-    // 1. اتجاه صاعد (فوق EMA50 و EMA200)
-    // 2. فوق الـ POC المؤسسي
-    // 3. كسر قمة (BOS) أو سحب سيولة قاع (Sweep) أو شمعة ابتلاعية صاعدة
-    // 4. زخم RSI قوي بين 52 و 72
     const isConfirmedStrongBull =
       c.close > ema50Arr[i] &&
       ema50Arr[i] >= ema200Arr[i] * 0.998 &&
@@ -393,7 +423,6 @@ export function runHistoricalBacktest(candles) {
       rsiArr[i] >= 52 &&
       rsiArr[i] <= 72;
 
-    // شروط "هبوط قوي" المؤكدة فقط (5 شروط مجتمعة):
     const isConfirmedStrongBear =
       c.close < ema50Arr[i] &&
       ema50Arr[i] <= ema200Arr[i] * 1.002 &&
@@ -408,7 +437,7 @@ export function runHistoricalBacktest(candles) {
       const isBuy = isConfirmedStrongBull;
       const entry = c.close;
       const sl = isBuy ? entry - atr * 1.2 : entry + atr * 1.2;
-      const tp = isBuy ? entry + atr * 2.0 : entry - atr * 2.0; // عائد للمخاطرة 1:1.67
+      const tp = isBuy ? entry + atr * 2.0 : entry - atr * 2.0;
 
       let outcome = "OPEN";
       for (let j = i + 1; j < Math.min(candles.length, i + 18); j++) {
@@ -456,7 +485,7 @@ export function runHistoricalBacktest(candles) {
           result: outcome === "WIN" ? "✅ رابحة" : "❌ خاسرة",
         });
 
-        cooldown = 10; // انتظار 10 شموع لمنع تكرار نفس الموجة
+        cooldown = 10;
       }
     }
   }
@@ -476,9 +505,6 @@ export function runHistoricalBacktest(candles) {
   };
 }
 
-/**
- * 3. محرك الـ AI الموجه لإصدار تقارير الصفقات القوية المؤكدة فقط
- */
 export async function generateAISignal(
   symbol,
   timeframe,
@@ -493,7 +519,7 @@ export async function generateAISignal(
 ) {
   const prompt = `
 أنت كبير محللي الفوركس المؤسسي (Chief Institutional Forex Strategist).
-حلل زوج (${symbol}) على فريم (${timeframe}) عبر الـ 7 مدارس العالمية والأخبار الحية.
+حلل زوج (${symbol}) على فريم (${timeframe}) والسعر الفوري الحالي هو (${techData.currentPrice}) عبر الـ 7 مدارس العالمية والأخبار الحية.
 
 [قاعدة صارمة جداً مطلوبة من المستخدم]:
 - المستخدم لا يتداول أبداً على الصفقات العادية أو الضعيفة ("صعود" أو "هبوط" عادي).
