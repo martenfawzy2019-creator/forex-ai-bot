@@ -14,40 +14,60 @@ const FOREX_SYMBOLS_MAP = {
   DXY: "DX-Y.NYB",
 };
 
+const TV_EXACT_TICKERS = {
+  XAUUSD: "OANDA:XAUUSD",
+  EURUSD: "OANDA:EURUSD",
+  GBPUSD: "OANDA:GBPUSD",
+  USDJPY: "OANDA:USDJPY",
+  DXY: "TVC:DXY",
+};
+
 /**
- * جلب السعر الفوري الحقيقي اللحظي (True Spot Price) لكل الأزواج والذهب مطابقاً لـ TradingView
+ * جلب السعر الحقيقي اللحظي من سيرفر TradingView الرسمي مباشرة (OANDA Live Tick)
+ * لضمان تطابق السعر والأرقام العشرية الخمسة (مثل 1.11755) بنسبة 100% مع شارت TradingView
  */
-async function fetchTrueSpotPrice(symbol) {
+async function fetchTradingViewExactPrice(symbol) {
+  try {
+    const tvTicker = TV_EXACT_TICKERS[symbol] || `OANDA:${symbol}`;
+    const res = await axios.post(
+      "https://scanner.tradingview.com/cfd/scan",
+      {
+        symbols: { tickers: [tvTicker], query: { types: [] } },
+        columns: ["close"],
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Mozilla/5.0",
+        },
+        timeout: 4500,
+      }
+    );
+
+    const exactPrice = res.data?.data?.[0]?.d?.[0];
+    if (exactPrice && !isNaN(exactPrice)) {
+      const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
+      return Number(Number(exactPrice).toFixed(decimals));
+    }
+  } catch (e) {}
+
+  // خطة بديلة للذهب الفوري في حال تأخر الماسح
   try {
     if (symbol === "XAUUSD") {
       const res = await axios.get("https://data-asg.goldprice.org/dbXRates/USD", {
         headers: { "User-Agent": "Mozilla/5.0" },
-        timeout: 4500,
+        timeout: 4000,
       });
       const spotGold = res.data?.items?.[0]?.xauPrice;
       if (spotGold && spotGold > 1000) return Number(Number(spotGold).toFixed(2));
     }
-
-    // جلب أسعار الصرف الفورية الدقيقة لجميع العملات
-    const ticker = FOREX_SYMBOLS_MAP[symbol];
-    if (ticker) {
-      const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
-        ticker
-      )}?interval=1m&range=1d`;
-      const res = await axios.get(url, {
-        headers: { "User-Agent": "Mozilla/5.0" },
-        timeout: 4500,
-      });
-      const price = res.data?.chart?.result?.[0]?.meta?.regularMarketPrice;
-      const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
-      if (price) return Number(Number(price).toFixed(decimals));
-    }
   } catch (e) {}
+
   return null;
 }
 
 /**
- * جلب الشموع اليابانية ومعايرتها لحظياً لكل الأزواج والعملات
+ * جلب الشموع اليابانية ومعايرتها لحظياً بسعر OANDA/TradingView الحقيقي (5 أرقام عشرية لليورو والباوند)
  */
 export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
   const ticker = FOREX_SYMBOLS_MAP[symbol] || "EURUSD=X";
@@ -56,9 +76,9 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     ticker
   )}?interval=${interval}&range=${range}&includePrePost=false`;
 
-  const [response, trueSpotPrice] = await Promise.all([
+  const [response, tvExactPrice] = await Promise.all([
     axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 7000 }),
-    fetchTrueSpotPrice(symbol),
+    fetchTradingViewExactPrice(symbol),
   ]);
 
   const result = response.data.chart.result[0];
@@ -83,8 +103,8 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
 
   if (rawCandles.length === 0) return [];
 
-  const lastRawClose = meta.regularMarketPrice || rawCandles[rawCandles.length - 1].close;
-  const basisOffset = trueSpotPrice ? lastRawClose - trueSpotPrice : 0;
+  const lastRawClose = rawCandles[rawCandles.length - 1].close || meta.regularMarketPrice;
+  const basisOffset = tvExactPrice ? lastRawClose - tvExactPrice : 0;
 
   const calibratedCandles = rawCandles.map((c) => ({
     time: c.time,
@@ -95,11 +115,11 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     volume: c.volume,
   }));
 
-  if (trueSpotPrice && calibratedCandles.length > 0) {
+  if (tvExactPrice && calibratedCandles.length > 0) {
     const last = calibratedCandles[calibratedCandles.length - 1];
-    last.close = trueSpotPrice;
-    if (trueSpotPrice > last.high) last.high = trueSpotPrice;
-    if (trueSpotPrice < last.low) last.low = trueSpotPrice;
+    last.close = tvExactPrice;
+    if (tvExactPrice > last.high) last.high = tvExactPrice;
+    if (tvExactPrice < last.low) last.low = tvExactPrice;
   }
 
   return calibratedCandles;
@@ -221,7 +241,7 @@ function detectAlgorithmicDivergence(candles, rsiSeries) {
   return "لا يوجد دايفرجنس";
 }
 
-function calculateVolumeProfilePOC(candles, decimals = 4) {
+function calculateVolumeProfilePOC(candles, decimals = 5) {
   const slice = candles.slice(-60);
   const minP = Math.min(...slice.map((c) => c.low));
   const maxP = Math.max(...slice.map((c) => c.high));
@@ -239,9 +259,6 @@ function calculateVolumeProfilePOC(candles, decimals = 4) {
   return Number((minP + (maxVolIdx + 0.5) * step).toFixed(decimals));
 }
 
-/**
- * حساب المؤشرات الفنية + الهيكل السعري + حساب مستويات الدخول والستوب الهيكلي الذكي لكل عملة
- */
 export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
   const closes = candles.map((c) => c.close);
@@ -283,7 +300,6 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const atr14 = calcATR(candles, 14);
   const pocPrice = calculateVolumeProfilePOC(candles, decimals);
 
-  // تحديد القمم والقيعان الهيكلية القريبة (لمنع ضرب الستوب) والكبيرة (لأهداف السيولة)
   const recentSwingSlice = candles.slice(-12);
   const recentStructuralLow = Math.min(...recentSwingSlice.map((c) => c.low));
   const recentStructuralHigh = Math.max(...recentSwingSlice.map((c) => c.high));
@@ -346,27 +362,39 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   if (current.close > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
   else if (current.close < ema50 && ema20 <= ema50) trendByEMA = "هابط";
 
-  // حساب مستويات الحماية المؤسسية الذكية (Smart Structural SL & TP) لمنع ضرب الستوب المبكر
+  const exactCurrentPrice = Number(current.close.toFixed(decimals));
+
   const smartBuySL = Number(
-    Math.min(recentStructuralLow - atr14 * 0.45, current.close - atr14 * 1.65).toFixed(decimals)
+    Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.65).toFixed(decimals)
   );
-  const buyRisk = Math.abs(current.close - smartBuySL) || atr14 * 1.5;
-  const smartBuyTP1 = Number((current.close + buyRisk * 1.25).toFixed(decimals));
-  const smartBuyTP2 = Number((current.close + buyRisk * 2.2).toFixed(decimals));
+  const buyRisk = Math.abs(exactCurrentPrice - smartBuySL) || atr14 * 1.5;
+  const smartBuyTP1 = Number((exactCurrentPrice + buyRisk * 1.25).toFixed(decimals));
+  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * 2.2).toFixed(decimals));
 
   const smartSellSL = Number(
-    Math.max(recentStructuralHigh + atr14 * 0.45, current.close + atr14 * 1.65).toFixed(decimals)
+    Math.max(recentStructuralHigh + atr14 * 0.45, exactCurrentPrice + atr14 * 1.65).toFixed(decimals)
   );
-  const sellRisk = Math.abs(smartSellSL - current.close) || atr14 * 1.5;
-  const smartSellTP1 = Number((current.close - sellRisk * 1.25).toFixed(decimals));
-  const smartSellTP2 = Number((current.close - sellRisk * 2.2).toFixed(decimals));
+  const sellRisk = Math.abs(smartSellSL - exactCurrentPrice) || atr14 * 1.5;
+  const smartSellTP1 = Number((exactCurrentPrice - sellRisk * 1.25).toFixed(decimals));
+  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * 2.2).toFixed(decimals));
 
   return {
-    currentPrice: current.close,
+    currentPrice: exactCurrentPrice.toFixed(decimals),
+    numericPrice: exactCurrentPrice,
     decimals,
     smartLevels: {
-      buy: { entry: current.close, sl: smartBuySL, tp1: smartBuyTP1, tp2: smartBuyTP2 },
-      sell: { entry: current.close, sl: smartSellSL, tp1: smartSellTP1, tp2: smartSellTP2 },
+      buy: {
+        entry: exactCurrentPrice.toFixed(decimals),
+        sl: smartBuySL.toFixed(decimals),
+        tp1: smartBuyTP1.toFixed(decimals),
+        tp2: smartBuyTP2.toFixed(decimals),
+      },
+      sell: {
+        entry: exactCurrentPrice.toFixed(decimals),
+        sl: smartSellSL.toFixed(decimals),
+        tp1: smartSellTP1.toFixed(decimals),
+        tp2: smartSellTP2.toFixed(decimals),
+      },
     },
     classical: {
       ema20,
@@ -394,13 +422,13 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
       r1,
       s1,
       pivotBias:
-        current.close > pivotP ? `أعلى المحور P (${pivotP})` : `أسفل المحور P (${pivotP})`,
+        exactCurrentPrice > pivotP ? `أعلى المحور P (${pivotP})` : `أسفل المحور P (${pivotP})`,
     },
     priceAction: { candlePattern },
     volumeAnalysis: {
       pocPrice,
       pocRelation:
-        current.close > pocPrice
+        exactCurrentPrice > pocPrice
           ? `أعلى نقطة تمركز السيولة POC (${pocPrice})`
           : `أسفل نقطة تمركز السيولة POC (${pocPrice})`,
       relativeVolumeRVOL: rvol,
@@ -411,9 +439,10 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
 export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) {
   const curTrend = currentTFTech.classical.trendByEMA;
   const highTrend = higherTFTech.classical.trendByEMA;
+  const curPrice = Number(currentTFTech.currentPrice);
   if (
     curTrend === "صاعد" &&
-    (highTrend === "صاعد" || currentTFTech.currentPrice > higherTFTech.classical.ema50)
+    (highTrend === "صاعد" || curPrice > higherTFTech.classical.ema50)
   )
     return {
       isAligned: true,
@@ -422,7 +451,7 @@ export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) 
     };
   if (
     curTrend === "هابط" &&
-    (highTrend === "هابط" || currentTFTech.currentPrice < higherTFTech.classical.ema50)
+    (highTrend === "هابط" || curPrice < higherTFTech.classical.ema50)
   )
     return {
       isAligned: true,
@@ -436,13 +465,10 @@ export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) 
   };
 }
 
-/**
- * فحص توافق كل زوج عملات مع مؤشر الدولار (DXY) لمنع الدخول عكس تدفق السيولة العالمي
- */
 export function evaluateDxyCorrelation(symbol, dxyTech) {
   const dxyTrend = dxyTech?.classical?.trendByEMA || "متذبذب";
-  const isInversePair = ["XAUUSD", "EURUSD", "GBPUSD"].includes(symbol); // عكس الدولار
-  const isDirectPair = ["USDJPY"].includes(symbol); // مع الدولار
+  const isInversePair = ["XAUUSD", "EURUSD", "GBPUSD"].includes(symbol);
+  const isDirectPair = ["USDJPY"].includes(symbol);
 
   if (isInversePair) {
     if (dxyTrend === "هابط") return { allowedBias: "BULLISH", note: "✅ ضعف الدولار DXY يدعم صعود الزوج بقوة" };
@@ -454,9 +480,6 @@ export function evaluateDxyCorrelation(symbol, dxyTech) {
   return { allowedBias: "ANY", note: "⚖️ مؤشر الدولار DXY في نطاق متوازن" };
 }
 
-/**
- * محرك الـ Backtest المؤسسي لكل الأزواج مع ستوب هيكلي محمي + تأمين الصفقة التلقائي (Break-Even)
- */
 export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
   if (!candles || candles.length < 60) {
     return { totalTrades: 0, wins: 0, losses: 0, winRate: 0, profitFactor: 0, markers: [], tradesList: [] };
@@ -510,26 +533,22 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
     const atr = atrArr[i] || Math.abs(c.high - c.low) || c.close * 0.0015;
     const localPoc = calculateVolumeProfilePOC(candles.slice(Math.max(0, i - 35), i + 1), decimals);
 
-    // تحديد القاع والقمة الهيكلية لآخر 8 شموع لوضع الستوب خلفها بأمان
     const recentBlock = candles.slice(i - 8, i + 1);
     const structLow = Math.min(...recentBlock.map((x) => x.low));
     const structHigh = Math.max(...recentBlock.map((x) => x.high));
 
-    // فلتر عدم الدخول في شمعة متضخمة جداً (Anti-Exhaustion Filter)
     const candleRange = Math.abs(c.high - c.low);
-    if (candleRange > atr * 2.2) continue;
+    if (candleRange > atr * 2.1) continue;
 
-    // شروط الشراء المؤسسي (ارتداد من منطقة قيمة + اتجاه صاعد + عدم تشبع)
     const isBullTrend = c.close > ema50Arr[i] && ema20Arr[i] >= ema50Arr[i];
     const isBullPullback = c.low <= ema20Arr[i] + atr * 0.35 && c.close > ema20Arr[i];
     const isBullRejection = c.close > c.open && c.close > prev.close && c.close >= localPoc;
-    const isBullMomentum = rsiArr[i] >= 48 && rsiArr[i] <= 65;
+    const isBullMomentum = rsiArr[i] >= 48 && rsiArr[i] <= 64;
 
-    // شروط البيع المؤسسي (ارتداد بيعي من مقاومة/متوسط + اتجاه هابط + عدم تشبع)
     const isBearTrend = c.close < ema50Arr[i] && ema20Arr[i] <= ema50Arr[i];
     const isBearPullback = c.high >= ema20Arr[i] - atr * 0.35 && c.close < ema20Arr[i];
     const isBearRejection = c.close < c.open && c.close < prev.close && c.close <= localPoc;
-    const isBearMomentum = rsiArr[i] <= 52 && rsiArr[i] >= 35;
+    const isBearMomentum = rsiArr[i] <= 52 && rsiArr[i] >= 36;
 
     const isConfirmedStrongBull = isBullTrend && isBullPullback && isBullRejection && isBullMomentum;
     const isConfirmedStrongBear = isBearTrend && isBearPullback && isBearRejection && isBearMomentum;
@@ -538,14 +557,13 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
       const isBuy = isConfirmedStrongBull;
       const entry = c.close;
 
-      // وضع الستوب خلف القاع/القمة الهيكلية مع هامش أمان لمنع ضرب الستوب بالذيول
       let sl = isBuy
-        ? Math.min(structLow - atr * 0.4, entry - atr * 1.6)
-        : Math.max(structHigh + atr * 0.4, entry + atr * 1.6);
+        ? Math.min(structLow - atr * 0.45, entry - atr * 1.65)
+        : Math.max(structHigh + atr * 0.45, entry + atr * 1.65);
 
       const riskDist = Math.abs(entry - sl);
-      const tp = isBuy ? entry + riskDist * 1.25 : entry - riskDist * 1.25;
-      const breakEvenTrigger = isBuy ? entry + riskDist * 0.65 : entry - riskDist * 0.65;
+      const tp = isBuy ? entry + riskDist * 1.2 : entry - riskDist * 1.2;
+      const breakEvenTrigger = isBuy ? entry + riskDist * 0.55 : entry - riskDist * 0.55;
 
       let outcome = "OPEN";
       let breakEvenActive = false;
@@ -557,7 +575,6 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
             outcome = "WIN";
             break;
           }
-          // تفعيل تأمين الصفقة إذا وصل السعر لـ 65% من الهدف
           if (future.high >= breakEvenTrigger) {
             breakEvenActive = true;
           }
@@ -623,61 +640,61 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 }
 
 /**
- * محرك التقييم الخوارزمي المسبق (Algorithmic Confluence Pre-Scorer):
- * يفحص الـ 7 مدارس بدقة لكل زوج عملات قبل إرساله للـ AI لضمان عدم إصدار أي صفقة مخالفة للهيكل السعري
+ * محرك التقييم الخوارزمي الصارم: يمنع الدخول عكس الدايفرجنس أو في مناطق التشبع نهائياً
  */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
-  const price = techData.currentPrice;
-  const { ema20, ema50, rsi14, trendByEMA } = techData.classical;
+  const price = Number(techData.currentPrice);
+  const { ema20, rsi14, trendByEMA, divergenceStatus } = techData.classical;
   const { pocPrice } = techData.volumeAnalysis;
   const { pivotP } = techData.pivots;
+
+  const hasBullDiv = divergenceStatus.includes("Bullish Divergence");
+  const hasBearDiv = divergenceStatus.includes("Bearish Divergence");
 
   let bullPoints = 0;
   let bearPoints = 0;
 
-  // 1. توافق الفريمات (MTF)
   if (mtfReport.directionBias === "BULLISH") bullPoints += 2;
   if (mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
-  // 2. الاتجاه والموقع من المتوسطات
   if (trendByEMA === "صاعد" && price > ema20) bullPoints += 2;
   if (trendByEMA === "هابط" && price < ema20) bearPoints += 2;
 
-  // 3. تمركز السيولة (Volume POC)
   if (price > pocPrice) bullPoints += 1;
   else bearPoints += 1;
 
-  // 4. المحور البنكي (Pivot P)
   if (price > pivotP) bullPoints += 1;
   else bearPoints += 1;
 
-  // 5. الزخم الصحي (عدم التشبع الشرائي أو البيعي الذي يضرب الستوب)
-  if (rsi14 >= 48 && rsi14 <= 67) bullPoints += 1;
-  if (rsi14 <= 52 && rsi14 >= 33) bearPoints += 1;
+  if (rsi14 >= 46 && rsi14 <= 65) bullPoints += 1;
+  if (rsi14 <= 54 && rsi14 >= 38) bearPoints += 1;
 
-  // 6. توافق مؤشر الدولار DXY حسب طبيعة كل زوج
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  // منع الصفقات وقت الأخبار الخطيرة
+  // عقوبة صارمة عند وجود دايفرجنس معاكس أو تشبع RSI لمنع ضرب الستوب في القيعان والقمم!
+  if (hasBullDiv || rsi14 < 38) {
+    bearPoints = Math.max(0, bearPoints - 4); // منع البيع في القاع أو مع الدايفرجنس الشرائي
+  }
+  if (hasBearDiv || rsi14 > 65) {
+    bullPoints = Math.max(0, bullPoints - 4); // منع الشراء في القمة أو مع الدايفرجنس البيعي
+  }
+
   if (newsShield?.shieldActive) {
     return { allowedSignal: "حياد / انتظار", maxConfidence: 60, bullPoints, bearPoints, dxyCorr };
   }
 
-  if (bullPoints >= 6 && rsi14 < 68 && dxyCorr.allowedBias !== "BEARISH") {
-    return { allowedSignal: "صعود قوي", maxConfidence: Math.min(96, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
+  if (bullPoints >= 6 && !hasBearDiv && rsi14 < 66 && dxyCorr.allowedBias !== "BEARISH") {
+    return { allowedSignal: "صعود قوي", maxConfidence: Math.min(95, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
   }
-  if (bearPoints >= 6 && rsi14 > 32 && dxyCorr.allowedBias !== "BULLISH") {
-    return { allowedSignal: "هبوط قوي", maxConfidence: Math.min(96, 78 + bearPoints * 2), bullPoints, bearPoints, dxyCorr };
+  if (bearPoints >= 6 && !hasBullDiv && rsi14 > 37 && dxyCorr.allowedBias !== "BULLISH") {
+    return { allowedSignal: "هبوط قوي", maxConfidence: Math.min(95, 78 + bearPoints * 2), bullPoints, bearPoints, dxyCorr };
   }
 
   return { allowedSignal: "حياد / انتظار", maxConfidence: 65, bullPoints, bearPoints, dxyCorr };
 }
 
-/**
- * 3. محرك الـ AI المؤسسي لكل الأزواج مع مستويات الدخول والستوب الهيكلي المحمي
- */
 export async function generateAISignal(
   symbol,
   timeframe,
@@ -697,19 +714,13 @@ export async function generateAISignal(
 
   const prompt = `
 أنت كبير محللي الفوركس المؤسسي (Chief Institutional Forex Strategist).
-حلل زوج (${symbol}) على فريم (${timeframe}) والسعر الفوري الحقيقي الآن هو (${price}).
+حلل زوج (${symbol}) على فريم (${timeframe}) والسعر الفوري المطابق لـ TradingView/OANDA بالضبط هو (${price}).
 
 [نتيجة الفلتر الخوارزمي الصارم لمنع ضرب الستوب لوز]:
-- الإشارة المسموح بها خوارزمياً الآن: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
-- نقاط القوة الشرائية: ${preCheck.bullPoints}/8 | نقاط القوة البيعية: ${preCheck.bearPoints}/8.
+- القرار المسموح به خوارزمياً: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
+- نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8.
+- حالة الدايفرجنس: ${techData.classical.divergenceStatus} (ممنوع تماماً البيع إذا وجد Bullish Divergence أو الشراء إذا وجد Bearish Divergence).
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
-
-[تعليمات صارمة جداً]:
-1. التزم بقرار الفلتر الخوارزمي (${preCheck.allowedSignal}): إذا كان "حياد / انتظار"، اجعل إشارتك "حياد / انتظار" وثقتك أقل من 70% واشرح للمستخدم لماذا الدخول الآن خطر وقد يضرب الستوب (بسبب تضارب الفريمات أو تشبع RSI أو معاكسة الدولار DXY).
-2. إذا كانت الإشارة المسموحة هي "صعود قوي"، استخدم مستويات الحماية الهيكلية المحسوبة بدقة خلف قاع السيولة:
-   - الدخول: ${buySetup.entry} | الستوب الهيكلي المحمي (SL): ${buySetup.sl} | الهدف الأول (TP1): ${buySetup.tp1} | الهدف الثاني (TP2): ${buySetup.tp2}
-3. إذا كانت الإشارة المسموحة هي "هبوط قوي"، استخدم مستويات الحماية الهيكلية المحسوبة بدقة خلف قمة السيولة:
-   - الدخول: ${sellSetup.entry} | الستوب الهيكلي المحمي (SL): ${sellSetup.sl} | الهدف الأول (TP1): ${sellSetup.tp1} | الهدف الثاني (TP2): ${sellSetup.tp2}
 
 [البيانات الفنية الحية للزوج (${symbol})]:
 1. SMC/ICT: ${techData.smc.structureStatus} | ${techData.smc.premiumDiscountZone} | القاع الهيكلي: ${techData.classical.recentStructuralLow} | القمة الهيكلية: ${techData.classical.recentStructuralHigh}
@@ -788,10 +799,10 @@ export async function generateAISignal(
 
   const aiResult = JSON.parse(response.text);
 
-  // ضمان مطابقة المستويات للستوب الهيكلي المحمي 100% حتى لا يضع الذكاء الاصطناعي ستوب ضيق أبداً
   if (preCheck.allowedSignal === "صعود قوي") {
     aiResult.signal = "صعود قوي";
     aiResult.confidenceScore = Math.max(86, preCheck.maxConfidence);
+    aiResult.consensusCount = `توافق ${preCheck.bullPoints} من 8 معايير مؤسسية`;
     aiResult.tradeSetup = {
       entryZone: `${buySetup.entry}`,
       stopLoss: `${buySetup.sl}`,
@@ -801,6 +812,7 @@ export async function generateAISignal(
   } else if (preCheck.allowedSignal === "هبوط قوي") {
     aiResult.signal = "هبوط قوي";
     aiResult.confidenceScore = Math.max(86, preCheck.maxConfidence);
+    aiResult.consensusCount = `توافق ${preCheck.bearPoints} من 8 معايير مؤسسية`;
     aiResult.tradeSetup = {
       entryZone: `${sellSetup.entry}`,
       stopLoss: `${sellSetup.sl}`,
@@ -809,7 +821,8 @@ export async function generateAISignal(
     };
   } else {
     aiResult.signal = "حياد / انتظار";
-    aiResult.confidenceScore = Math.min(70, aiResult.confidenceScore || 60);
+    aiResult.confidenceScore = Math.min(68, aiResult.confidenceScore || 60);
+    aiResult.consensusCount = `تعارض فني (شراء ${preCheck.bullPoints}/8 | بيع ${preCheck.bearPoints}/8)`;
   }
 
   return aiResult;
