@@ -14,7 +14,7 @@ const FOREX_SYMBOLS_MAP = {
   DXY: "DX-Y.NYB",
 };
 
-const TV_EXACT_TICKERS = {
+export const TV_EXACT_TICKERS = {
   XAUUSD: "OANDA:XAUUSD",
   EURUSD: "OANDA:EURUSD",
   GBPUSD: "OANDA:GBPUSD",
@@ -22,52 +22,134 @@ const TV_EXACT_TICKERS = {
   DXY: "TVC:DXY",
 };
 
+const TV_TF_SUFFIX = {
+  "5m": "|5",
+  "15m": "|15",
+  "1h": "|60",
+  "1d": "",
+};
+
 /**
- * جلب السعر الحقيقي اللحظي من سيرفر TradingView الرسمي مباشرة (OANDA Live Tick)
- * لضمان تطابق السعر والأرقام العشرية الخمسة (مثل 1.11755) بنسبة 100% مع شارت TradingView
+ * 1. محرك البث الحي (Live Tick Streamer):
+ * يسحب الأسعار اللحظية والتغير اللحظي من TradingView مباشرة كل ثانيتين لكل الأزواج
  */
-async function fetchTradingViewExactPrice(symbol) {
+export async function fetchLiveTradingViewTicks() {
   try {
-    const tvTicker = TV_EXACT_TICKERS[symbol] || `OANDA:${symbol}`;
+    const tickers = Object.values(TV_EXACT_TICKERS);
     const res = await axios.post(
-      "https://scanner.tradingview.com/cfd/scan",
+      "https://scanner.tradingview.com/global/scan",
       {
-        symbols: { tickers: [tvTicker], query: { types: [] } },
-        columns: ["close"],
+        symbols: { tickers, query: { types: [] } },
+        columns: ["close", "change", "change_abs", "high", "low", "Recommend.All|15", "RSI|15"],
       },
       {
-        headers: {
-          "Content-Type": "application/json",
-          "User-Agent": "Mozilla/5.0",
-        },
+        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+        timeout: 3500,
+      }
+    );
+
+    const rows = res.data?.data || [];
+    const liveMap = {};
+
+    for (const row of rows) {
+      const tvSym = row.s;
+      const d = row.d || [];
+      const pairKey = Object.keys(TV_EXACT_TICKERS).find((k) => TV_EXACT_TICKERS[k] === tvSym);
+      if (pairKey && d[0] !== undefined && d[0] !== null) {
+        const decimals = pairKey === "XAUUSD" || pairKey === "DXY" ? 2 : pairKey === "USDJPY" ? 3 : 5;
+        liveMap[pairKey] = {
+          symbol: pairKey,
+          tvSymbol: tvSym,
+          price: Number(Number(d[0]).toFixed(decimals)),
+          priceStr: Number(d[0]).toFixed(decimals),
+          changePercent: Number((d[1] || 0).toFixed(2)),
+          changeAbs: Number((d[2] || 0).toFixed(decimals)),
+          high: Number((d[3] || d[0]).toFixed(decimals)),
+          low: Number((d[4] || d[0]).toFixed(decimals)),
+          tvRating: Number((d[5] || 0).toFixed(2)),
+          rsi15m: Number((d[6] || 50).toFixed(2)),
+          decimals,
+          timestamp: Date.now(),
+        };
+      }
+    }
+    return liveMap;
+  } catch (e) {
+    return {};
+  }
+}
+
+/**
+ * 2. سحب المؤشرات الفنية الحقيقية المحسوبة داخل سيرفر TradingView نفسه للفريم المختار
+ */
+export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timeframe = "15m") {
+  const tf = TV_TF_SUFFIX[timeframe] !== undefined ? TV_TF_SUFFIX[timeframe] : "|15";
+  const tvTicker = TV_EXACT_TICKERS[symbol] || `OANDA:${symbol}`;
+  const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
+
+  const cols = [
+    `close${tf}`,
+    `open${tf}`,
+    `high${tf}`,
+    `low${tf}`,
+    `RSI${tf}`,
+    `EMA20${tf}`,
+    `EMA50${tf}`,
+    `EMA200${tf}`,
+    `ATR${tf}`,
+    `Pivot.M.Classic.Middle${tf}`,
+    `Pivot.M.Classic.R1${tf}`,
+    `Pivot.M.Classic.S1${tf}`,
+    `Recommend.All${tf}`,
+    `MACD.macd${tf}`,
+    `MACD.signal${tf}`,
+    "close", // السعر اللحظي بالثانية
+    "change",
+    "change_abs",
+  ];
+
+  try {
+    const res = await axios.post(
+      "https://scanner.tradingview.com/global/scan",
+      {
+        symbols: { tickers: [tvTicker], query: { types: [] } },
+        columns: cols,
+      },
+      {
+        headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
         timeout: 4500,
       }
     );
 
-    const exactPrice = res.data?.data?.[0]?.d?.[0];
-    if (exactPrice && !isNaN(exactPrice)) {
-      const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
-      return Number(Number(exactPrice).toFixed(decimals));
+    const d = res.data?.data?.[0]?.d;
+    if (d && d[15] !== null && d[15] !== undefined) {
+      const livePrice = Number(Number(d[15]).toFixed(decimals));
+      return {
+        livePrice,
+        open: Number(Number(d[1] || livePrice).toFixed(decimals)),
+        high: Number(Number(d[2] || livePrice).toFixed(decimals)),
+        low: Number(Number(d[3] || livePrice).toFixed(decimals)),
+        rsi: Number(Number(d[4] || 50).toFixed(2)),
+        ema20: Number(Number(d[5] || livePrice).toFixed(decimals)),
+        ema50: Number(Number(d[6] || livePrice).toFixed(decimals)),
+        ema200: Number(Number(d[7] || livePrice).toFixed(decimals)),
+        atr: Number(Number(d[8] || Math.abs((d[2] || livePrice) - (d[3] || livePrice)) || livePrice * 0.0015).toFixed(decimals)),
+        pivotP: Number(Number(d[9] || livePrice).toFixed(decimals)),
+        r1: Number(Number(d[10] || livePrice * 1.002).toFixed(decimals)),
+        s1: Number(Number(d[11] || livePrice * 0.998).toFixed(decimals)),
+        tvRecommend: Number(Number(d[12] || 0).toFixed(2)),
+        macd: Number(Number(d[13] || 0).toFixed(5)),
+        macdSignal: Number(Number(d[14] || 0).toFixed(5)),
+        changePercent: Number(Number(d[16] || 0).toFixed(2)),
+        changeAbs: Number(Number(d[17] || 0).toFixed(decimals)),
+      };
     }
   } catch (e) {}
-
-  // خطة بديلة للذهب الفوري في حال تأخر الماسح
-  try {
-    if (symbol === "XAUUSD") {
-      const res = await axios.get("https://data-asg.goldprice.org/dbXRates/USD", {
-        headers: { "User-Agent": "Mozilla/5.0" },
-        timeout: 4000,
-      });
-      const spotGold = res.data?.items?.[0]?.xauPrice;
-      if (spotGold && spotGold > 1000) return Number(Number(spotGold).toFixed(2));
-    }
-  } catch (e) {}
-
   return null;
 }
 
 /**
- * جلب الشموع اليابانية ومعايرتها لحظياً بسعر OANDA/TradingView الحقيقي (5 أرقام عشرية لليورو والباوند)
+ * 3. جلب الشموع ومعايرتها بالكامل مع السعر اللحظي لـ TradingView
  */
 export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
   const ticker = FOREX_SYMBOLS_MAP[symbol] || "EURUSD=X";
@@ -76,13 +158,12 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     ticker
   )}?interval=${interval}&range=${range}&includePrePost=false`;
 
-  const [response, tvExactPrice] = await Promise.all([
+  const [response, tvSnap] = await Promise.all([
     axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 7000 }),
-    fetchTradingViewExactPrice(symbol),
+    fetchTradingViewFullTechnicals(symbol, interval),
   ]);
 
   const result = response.data.chart.result[0];
-  const meta = result.meta || {};
   const timestamps = result.timestamp || [];
   const quote = result.indicators.quote[0];
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
@@ -103,8 +184,9 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
 
   if (rawCandles.length === 0) return [];
 
-  const lastRawClose = rawCandles[rawCandles.length - 1].close || meta.regularMarketPrice;
-  const basisOffset = tvExactPrice ? lastRawClose - tvExactPrice : 0;
+  const exactTvPrice = tvSnap?.livePrice;
+  const lastRawClose = rawCandles[rawCandles.length - 1].close;
+  const basisOffset = exactTvPrice ? lastRawClose - exactTvPrice : 0;
 
   const calibratedCandles = rawCandles.map((c) => ({
     time: c.time,
@@ -113,13 +195,15 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     low: Number((c.low - basisOffset).toFixed(decimals)),
     close: Number((c.close - basisOffset).toFixed(decimals)),
     volume: c.volume,
+    tvSnap: null,
   }));
 
-  if (tvExactPrice && calibratedCandles.length > 0) {
+  if (exactTvPrice && calibratedCandles.length > 0) {
     const last = calibratedCandles[calibratedCandles.length - 1];
-    last.close = tvExactPrice;
-    if (tvExactPrice > last.high) last.high = tvExactPrice;
-    if (tvExactPrice < last.low) last.low = tvExactPrice;
+    last.close = exactTvPrice;
+    if (exactTvPrice > last.high) last.high = exactTvPrice;
+    if (exactTvPrice < last.low) last.low = exactTvPrice;
+    last.tvSnap = tvSnap; // حفظ مؤشرات TradingView الرسمية داخل آخر شمعة
   }
 
   return calibratedCandles;
@@ -259,6 +343,9 @@ function calculateVolumeProfilePOC(candles, decimals = 5) {
   return Number((minP + (maxVolIdx + 0.5) * step).toFixed(decimals));
 }
 
+/**
+ * حساب المؤشرات بالاعتماد المباشر على أرقام ومؤشرات TradingView الحية (tvSnap)
+ */
 export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
   const closes = candles.map((c) => c.close);
@@ -266,6 +353,7 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const current = candles[len - 1];
   const prev1 = candles[len - 2] || current;
   const prev2 = candles[len - 3] || current;
+  const tv = current?.tvSnap || null;
 
   const calcEMA = (data, period) => {
     if (data.length < period) return data[data.length - 1];
@@ -291,13 +379,15 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
     return Number((trSum / period).toFixed(decimals));
   };
 
-  const ema20 = calcEMA(closes, 20);
-  const ema50 = calcEMA(closes, 50);
-  const ema200 = calcEMA(closes, 200);
+  // استخدام أرقام TradingView الحقيقية مباشرة إن وجدت
+  const exactCurrentPrice = tv?.livePrice || Number(current.close.toFixed(decimals));
+  const ema20 = tv?.ema20 || calcEMA(closes, 20);
+  const ema50 = tv?.ema50 || calcEMA(closes, 50);
+  const ema200 = tv?.ema200 || calcEMA(closes, 200);
   const rsiSeries = calcRSISeries(closes, 14);
-  const rsi14 = rsiSeries[rsiSeries.length - 1];
+  const rsi14 = tv?.rsi || rsiSeries[rsiSeries.length - 1];
   const divergenceStatus = detectAlgorithmicDivergence(candles, rsiSeries);
-  const atr14 = calcATR(candles, 14);
+  const atr14 = tv?.atr || calcATR(candles, 14);
   const pocPrice = calculateVolumeProfilePOC(candles, decimals);
 
   const recentSwingSlice = candles.slice(-12);
@@ -312,44 +402,40 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const fib50 = Number((swingHigh - range * 0.5).toFixed(decimals));
   const fib618 = Number((swingHigh - range * 0.618).toFixed(decimals));
   const fib786 = Number((swingHigh - range * 0.786).toFixed(decimals));
-  const pricePositionPercent = Number((((current.close - swingLow) / range) * 100).toFixed(1));
+  const pricePositionPercent = Number((((exactCurrentPrice - swingLow) / range) * 100).toFixed(1));
   const zoneStatus =
     pricePositionPercent > 50
       ? `منطقة Premium (${pricePositionPercent}%)`
       : `منطقة Discount (${pricePositionPercent}%)`;
 
   let fibStatus = `توازن عند ${fib50}`;
-  if (current.close <= fib50 && current.close >= fib786) {
+  if (exactCurrentPrice <= fib50 && exactCurrentPrice >= fib786) {
     fibStatus = `🔥 داخل منطقة الفيبوناتشي الذهبية (OTE: ${fib786} - ${fib618})`;
   }
 
-  const prevCandlesBlock = candles.slice(-24, -1);
-  const pHigh = Math.max(...prevCandlesBlock.map((c) => c.high));
-  const pLow = Math.min(...prevCandlesBlock.map((c) => c.low));
-  const pClose = prev1.close;
-  const pivotP = Number(((pHigh + pLow + pClose) / 3).toFixed(decimals));
-  const r1 = Number((2 * pivotP - pLow).toFixed(decimals));
-  const s1 = Number((2 * pivotP - pHigh).toFixed(decimals));
+  const pivotP = tv?.pivotP || Number(((swingHigh + swingLow + prev1.close) / 3).toFixed(decimals));
+  const r1 = tv?.r1 || Number((2 * pivotP - swingLow).toFixed(decimals));
+  const s1 = tv?.s1 || Number((2 * pivotP - swingHigh).toFixed(decimals));
 
-  const bodySize = Math.abs(current.close - current.open);
-  const upperWick = current.high - Math.max(current.close, current.open);
-  const lowerWick = Math.min(current.close, current.open) - current.low;
+  const bodySize = Math.abs(exactCurrentPrice - current.open);
+  const upperWick = current.high - Math.max(exactCurrentPrice, current.open);
+  const lowerWick = Math.min(exactCurrentPrice, current.open) - current.low;
 
   let candlePattern = "شمعة عادية";
-  if (current.close > current.open && current.close > prev1.high)
+  if (exactCurrentPrice > current.open && exactCurrentPrice > prev1.high)
     candlePattern = "🟢 شمعة ابتلاعية شرائية قوية";
-  else if (current.close < current.open && current.close < prev1.low)
+  else if (exactCurrentPrice < current.open && exactCurrentPrice < prev1.low)
     candlePattern = "🔴 شمعة ابتلاعية بيعية قوية";
   else if (lowerWick > bodySize * 1.5) candlePattern = "🟢 شمعة بن بار شرائية (Rejection)";
   else if (upperWick > bodySize * 1.5) candlePattern = "🔴 شمعة بن بار بيعية (Rejection)";
 
   let smcStructure = "تحرك داخل النطاق";
-  if (current.high > swingHigh && current.close < swingHigh)
+  if (current.high > swingHigh && exactCurrentPrice < swingHigh)
     smcStructure = "Bearish Liquidity Sweep (سحب سيولة قمة)";
-  else if (current.low < swingLow && current.close > swingLow)
+  else if (current.low < swingLow && exactCurrentPrice > swingLow)
     smcStructure = "Bullish Liquidity Sweep (سحب سيولة قاع)";
-  else if (current.close > swingHigh) smcStructure = "Bullish BOS (كسر هيكلي صاعد)";
-  else if (current.close < swingLow) smcStructure = "Bearish BOS (كسر هيكلي هابط)";
+  else if (exactCurrentPrice > swingHigh) smcStructure = "Bullish BOS (كسر هيكلي صاعد)";
+  else if (exactCurrentPrice < swingLow) smcStructure = "Bearish BOS (كسر هيكلي هابط)";
 
   let fvgZone = "لا توجد فجوة سعرية";
   if (current.low > prev2.high) fvgZone = `Bullish FVG بين ${prev2.high} و ${current.low}`;
@@ -359,10 +445,8 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const rvol = avgVol > 0 ? Number((current.volume / avgVol).toFixed(2)) : 1.0;
 
   let trendByEMA = "متذبذب";
-  if (current.close > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
-  else if (current.close < ema50 && ema20 <= ema50) trendByEMA = "هابط";
-
-  const exactCurrentPrice = Number(current.close.toFixed(decimals));
+  if (exactCurrentPrice > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
+  else if (exactCurrentPrice < ema50 && ema20 <= ema50) trendByEMA = "هابط";
 
   const smartBuySL = Number(
     Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.65).toFixed(decimals)
@@ -381,6 +465,9 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   return {
     currentPrice: exactCurrentPrice.toFixed(decimals),
     numericPrice: exactCurrentPrice,
+    changePercent: tv?.changePercent || 0,
+    changeAbs: tv?.changeAbs || 0,
+    tvRecommend: tv?.tvRecommend || 0,
     decimals,
     smartLevels: {
       buy: {
@@ -601,15 +688,6 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
         if (outcome === "WIN") wins++;
         else losses++;
 
-        const unixTime = Math.floor(new Date(c.time).getTime() / 1000);
-        markers.push({
-          time: unixTime,
-          position: isBuy ? "belowBar" : "aboveBar",
-          color: outcome === "WIN" ? "#00e676" : "#ff1744",
-          shape: isBuy ? "arrowUp" : "arrowDown",
-          text: `${isBuy ? "🔥 صعود قوي" : "🔥 هبوط قوي"} (${outcome === "WIN" ? "✅ هدف/تأمين" : "❌ ستوب"})`,
-        });
-
         tradesList.push({
           time: c.time,
           type: isBuy ? "صعود قوي مؤكد" : "هبوط قوي مؤكد",
@@ -640,7 +718,7 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 }
 
 /**
- * محرك التقييم الخوارزمي الصارم: يمنع الدخول عكس الدايفرجنس أو في مناطق التشبع نهائياً
+ * محرك التقييم الخوارزمي المربوط بمؤشرات TradingView المباشرة (tvRecommend + RSI + EMA + DXY)
  */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
@@ -648,6 +726,7 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const { ema20, rsi14, trendByEMA, divergenceStatus } = techData.classical;
   const { pocPrice } = techData.volumeAnalysis;
   const { pivotP } = techData.pivots;
+  const tvRec = techData.tvRecommend || 0;
 
   const hasBullDiv = divergenceStatus.includes("Bullish Divergence");
   const hasBearDiv = divergenceStatus.includes("Bearish Divergence");
@@ -655,31 +734,33 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   let bullPoints = 0;
   let bearPoints = 0;
 
+  // 1. توافق الفريمات (MTF)
   if (mtfReport.directionBias === "BULLISH") bullPoints += 2;
   if (mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
+  // 2. اتجاه المتوسطات في TradingView
   if (trendByEMA === "صاعد" && price > ema20) bullPoints += 2;
   if (trendByEMA === "هابط" && price < ema20) bearPoints += 2;
 
-  if (price > pocPrice) bullPoints += 1;
-  else bearPoints += 1;
+  // 3. تقييم TradingView الفني المباشر (Recommend.All)
+  if (tvRec >= 0.15) bullPoints += 1;
+  if (tvRec <= -0.15) bearPoints += 1;
 
-  if (price > pivotP) bullPoints += 1;
-  else bearPoints += 1;
+  // 4. تمركز السيولة والمحور البنكي
+  if (price > pocPrice && price > pivotP) bullPoints += 1;
+  if (price < pocPrice && price < pivotP) bearPoints += 1;
 
-  if (rsi14 >= 46 && rsi14 <= 65) bullPoints += 1;
-  if (rsi14 <= 54 && rsi14 >= 38) bearPoints += 1;
+  // 5. زخم RSI من TradingView
+  if (rsi14 >= 48 && rsi14 <= 65) bullPoints += 1;
+  if (rsi14 <= 52 && rsi14 >= 38) bearPoints += 1;
 
+  // 6. توافق مؤشر الدولار DXY
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  // عقوبة صارمة عند وجود دايفرجنس معاكس أو تشبع RSI لمنع ضرب الستوب في القيعان والقمم!
-  if (hasBullDiv || rsi14 < 38) {
-    bearPoints = Math.max(0, bearPoints - 4); // منع البيع في القاع أو مع الدايفرجنس الشرائي
-  }
-  if (hasBearDiv || rsi14 > 65) {
-    bullPoints = Math.max(0, bullPoints - 4); // منع الشراء في القمة أو مع الدايفرجنس البيعي
-  }
+  // منع عكس الدايفرجنس أو الدخول في التشبع
+  if (hasBullDiv || rsi14 < 38) bearPoints = Math.max(0, bearPoints - 4);
+  if (hasBearDiv || rsi14 > 66) bullPoints = Math.max(0, bullPoints - 4);
 
   if (newsShield?.shieldActive) {
     return { allowedSignal: "حياد / انتظار", maxConfidence: 60, bullPoints, bearPoints, dxyCorr };
@@ -714,20 +795,20 @@ export async function generateAISignal(
 
   const prompt = `
 أنت كبير محللي الفوركس المؤسسي (Chief Institutional Forex Strategist).
-حلل زوج (${symbol}) على فريم (${timeframe}) والسعر الفوري المطابق لـ TradingView/OANDA بالضبط هو (${price}).
+حلل زوج (${symbol}) على فريم (${timeframe}) بناءً على بيانات وسعر منصة TradingView (OANDA) اللحظي المباشر وهو (${price}).
 
-[نتيجة الفلتر الخوارزمي الصارم لمنع ضرب الستوب لوز]:
-- القرار المسموح به خوارزمياً: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
+[نتيجة الفلتر الخوارزمي المباشر من TradingView]:
+- القرار المسموح به الآن: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
 - نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8.
-- حالة الدايفرجنس: ${techData.classical.divergenceStatus} (ممنوع تماماً البيع إذا وجد Bullish Divergence أو الشراء إذا وجد Bearish Divergence).
+- حالة الدايفرجنس: ${techData.classical.divergenceStatus}.
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
 
-[البيانات الفنية الحية للزوج (${symbol})]:
+[بيانات TradingView الحية للزوج (${symbol})]:
 1. SMC/ICT: ${techData.smc.structureStatus} | ${techData.smc.premiumDiscountZone} | القاع الهيكلي: ${techData.classical.recentStructuralLow} | القمة الهيكلية: ${techData.classical.recentStructuralHigh}
 2. الفيبوناتشي: ${techData.fibonacci.fibStatus} (61.8%: ${techData.fibonacci.fib618})
-3. المحاور البنكية (Pivots): ${techData.pivots.pivotBias} (P: ${techData.pivots.pivotP}, R1: ${techData.pivots.r1}, S1: ${techData.pivots.s1})
+3. المحاور البنكية (TradingView Pivots): ${techData.pivots.pivotBias} (P: ${techData.pivots.pivotP}, R1: ${techData.pivots.r1}, S1: ${techData.pivots.s1})
 4. البرايس أكشن: ${techData.priceAction.candlePattern}
-5. المؤشرات والدايفرجنس: الاتجاه ${techData.classical.trendByEMA} | RSI: ${techData.classical.rsi14} | ${techData.classical.divergenceStatus}
+5. مؤشرات TradingView الحية: الاتجاه ${techData.classical.trendByEMA} | RSI: ${techData.classical.rsi14} | تقييم TV الرقمي: ${techData.tvRecommend}
 6. الفوليوم والـ POC: ${techData.volumeAnalysis.pocRelation} | RVOL: ${techData.volumeAnalysis.relativeVolumeRVOL}
 7. الفريم الأكبر والدولار: ${mtfReport.mtfStatus} | DXY: ${dxyData.currentPrice} (${dxyData.classical.trendByEMA})
 `;

@@ -3,18 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>رادار الفوركس المؤسسي v4.0 | نظام الصفقات المؤكدة فقط</title>
+  <title>رادار الفوركس المؤسسي v5.0 | بث حي مباشر من TradingView</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
   <style>
     body { font-family: 'Cairo', sans-serif; background-color: #0b0e14; color: #f1f5f9; }
     .card { background-color: #151924; border: 1px solid #22293a; border-radius: 14px; }
-    .pulse-green { box-shadow: 0 0 25px rgba(0, 230, 118, 0.2); border-color: #00e676; }
-    .pulse-red { box-shadow: 0 0 25px rgba(255, 23, 68, 0.2); border-color: #ff1744; }
-    .pulse-amber { box-shadow: 0 0 20px rgba(255, 193, 7, 0.15); border-color: #ffc107; }
+    .tabular-nums { font-variant-numeric: tabular-nums; font-family: 'Courier New', Courier, monospace; }
+    @keyframes flashGreen { 0% { background-color: rgba(16, 185, 129, 0.35); } 100% { background-color: transparent; } }
+    @keyframes flashRed { 0% { background-color: rgba(244, 63, 94, 0.35); } 100% { background-color: transparent; } }
+    .tick-up { animation: flashGreen 0.7s ease-out; color: #10b981 !important; }
+    .tick-down { animation: flashRed 0.7s ease-out; color: #f43f5e !important; }
   </style>
 </head>
 <body class="min-h-screen pb-12">
@@ -24,35 +25,47 @@
     <div class="flex items-center gap-3">
       <span class="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
       <h1 class="text-xl font-black tracking-wide text-white">
-        رادار الفوركس المؤسسي <span class="bg-amber-500/20 text-amber-300 border border-amber-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v4.0 | الصفقات المؤكدة فقط (+85%)</span>
+        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.0 | مربوط لحظياً بـ TradingView Live</span>
       </h1>
     </div>
 
     <div class="flex flex-wrap items-center gap-2">
-      <button onclick="toggleBacktestMode()" id="backtestBtn" class="bg-purple-600 hover:bg-purple-500 text-white px-4 py-2 rounded-lg text-sm font-black transition shadow-lg">
-        🧪 إظهار الصفقات المؤكدة (Backtest) على الشارت
-      </button>
       <button onclick="runMarketScanner()" id="scanBtn" class="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 text-black px-4 py-2 rounded-lg text-sm font-black transition shadow-lg">
-        📡 فحص كل السوق
+        📡 فحص كل السوق الآن
       </button>
       <button onclick="fetchAnalysis(true)" id="refreshBtn" class="bg-emerald-500 hover:bg-emerald-400 text-black px-4 py-2 rounded-lg text-sm font-bold transition">
-        🔄 تحديث شامل
+        🔄 تحديث التحليل على السعر اللحظي
       </button>
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 mt-6 space-y-5">
+  <main class="max-w-7xl mx-auto px-4 mt-5 space-y-5">
 
-    <!-- 1. عداد القوة النسبية للعملات -->
+    <!-- 1. شريط عداد الأسعار الحي من TradingView (يتغير لحظياً كل ثانيتين مثل منصات التداول) -->
+    <div class="card p-4 border border-emerald-500/30 bg-[#0f131d]">
+      <div class="flex justify-between items-center mb-3">
+        <div class="flex items-center gap-2">
+          <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse"></span>
+          <h2 class="text-sm font-black text-white">⚡ عداد أسعار TradingView المباشر (OANDA Live Tick Stream)</h2>
+        </div>
+        <span class="text-xs text-emerald-400 font-bold" id="liveStreamStatus">متصل بالبث اللحظي المباشر (يتحدث كل ثانيتين)...</span>
+      </div>
+
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3" id="liveWatchlistBar">
+        <!-- يتم ملؤه وتحديثه لحظياً عبر Socket.io -->
+      </div>
+    </div>
+
+    <!-- 2. عداد القوة النسبية للعملات -->
     <div class="card p-4">
       <div class="flex flex-wrap justify-between items-center mb-3">
-        <h2 class="text-sm font-black text-cyan-400">⚖️ عداد القوة النسبية للعملات والذهب الآن (Live Currency Strength Meter)</h2>
+        <h2 class="text-sm font-black text-cyan-400">⚖️ عداد القوة النسبية للعملات والذهب الآن (من مؤشرات TradingView الحية)</h2>
         <span class="text-xs text-gray-400" id="bestPairHint">جاري قياس تدفق السيولة بين العملات...</span>
       </div>
       <div id="currencyStrengthGrid" class="grid grid-cols-2 md:grid-cols-5 gap-3"></div>
     </div>
 
-    <!-- 2. شريط الجلسة ودرع الأخبار -->
+    <!-- 3. شريط الجلسة ودرع الأخبار -->
     <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div class="card px-4 py-3 flex items-center justify-between border-r-4 border-r-blue-500">
         <div>
@@ -100,12 +113,12 @@
 
     <div id="loader" class="card p-12 text-center space-y-4">
       <div class="inline-block w-12 h-12 border-4 border-emerald-400 border-t-transparent rounded-full animate-spin"></div>
-      <p class="text-lg font-bold text-gray-300">جاري فحص حالة السوق وتشغيل محرك الصفقات المؤكدة...</p>
+      <p class="text-lg font-bold text-gray-300">جاري سحب السعر اللحظي ومؤشرات TradingView المباشرة...</p>
     </div>
 
     <div id="dashboard" class="hidden space-y-6">
 
-      <!-- 3. القرار النهائي وكاشف الدايفرجنس -->
+      <!-- 4. بطاقة السعر اللحظي النابض والقرار النهائي -->
       <div id="mainSignalCard" class="card p-6 border-2 transition-all">
         <div class="flex flex-wrap justify-between items-center gap-6">
           <div>
@@ -115,15 +128,20 @@
               <span id="consensusBadge" class="text-xs px-3 py-1 rounded-full font-bold bg-purple-500/20 text-purple-300">--</span>
               <span id="divergenceBadge" class="text-xs px-3 py-1 rounded-full font-bold bg-amber-500/20 text-amber-300">--</span>
             </div>
-            <div class="flex items-center gap-4 mt-2">
-              <span class="text-4xl font-black text-white" id="currentPrice">--</span>
-              <span class="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3 py-1 rounded-lg text-sm font-bold" id="dxyPrice">DXY: --</span>
-              <span class="bg-pink-500/10 border border-pink-500/30 text-pink-300 px-3 py-1 rounded-lg text-sm font-bold" id="pocBadge">POC: --</span>
+
+            <!-- عداد السعر اللحظي المتغير كل ثانيتين بنفس ستايل منصات التداول -->
+            <div class="flex flex-wrap items-baseline gap-4 mt-3">
+              <div id="liveMainPriceBox" class="px-3 py-1 rounded-xl transition-all">
+                <span class="text-5xl font-black text-white tabular-nums tracking-tight" id="currentPrice">--</span>
+              </div>
+              <div id="liveMainChangeBox" class="text-sm font-black tabular-nums px-2.5 py-1 rounded-lg">--</div>
+              <span class="bg-amber-500/10 border border-amber-500/30 text-amber-300 px-3 py-1 rounded-lg text-sm font-bold tabular-nums" id="dxyPrice">DXY: --</span>
+              <span class="bg-pink-500/10 border border-pink-500/30 text-pink-300 px-3 py-1 rounded-lg text-sm font-bold tabular-nums" id="pocBadge">POC: --</span>
             </div>
           </div>
 
           <div class="text-center px-6 py-4 rounded-xl border-2" id="signalBadgeBox">
-            <div class="text-xs text-gray-300 mb-1">القرار النهائي المدمج</div>
+            <div class="text-xs text-gray-300 mb-1">القرار النهائي المدمج (على سعر TradingView)</div>
             <div class="text-3xl font-black" id="signalText">--</div>
             <div class="text-sm font-bold mt-1" id="confidenceText">درجة الثقة: --%</div>
           </div>
@@ -144,80 +162,40 @@
         </div>
       </div>
 
-      <!-- 4. لوحة نتائج الـ Backtest للصفقات المؤكدة فقط -->
-      <div id="backtestPanel" class="card p-5 border-2 border-purple-500/50 bg-[#16192b]">
-        <div class="flex flex-wrap justify-between items-center gap-4 mb-3">
-          <div>
-            <h2 class="text-base font-black text-purple-300">🧪 نتائج المحاكي التاريخي للصفقات المؤكدة فقط ("صعود قوي" / "هبوط قوي")</h2>
-            <p class="text-xs text-gray-400">يرسم على الشموع حصرياً الصفقات التي استوفت شروط القوة الكاملة ويتجاهل الصفقات العادية</p>
-          </div>
-          <div class="flex gap-4 text-center">
-            <div class="bg-[#0e121b] px-4 py-2 rounded-lg border border-gray-700">
-              <div class="text-xs text-gray-400">نسبة النجاح (Win Rate)</div>
-              <div class="text-xl font-black text-emerald-400" id="btWinRate">--%</div>
-            </div>
-            <div class="bg-[#0e121b] px-4 py-2 rounded-lg border border-gray-700">
-              <div class="text-xs text-gray-400">الرابحة / الخاسرة</div>
-              <div class="text-xl font-black text-white" id="btWinsLosses">-- / --</div>
-            </div>
-            <div class="bg-[#0e121b] px-4 py-2 rounded-lg border border-gray-700">
-              <div class="text-xs text-gray-400">معامل الربح (Profit Factor)</div>
-              <div class="text-xl font-black text-amber-400" id="btProfitFactor">--</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- 5. قسم الشارت المزدوج: شارت TradingView الرسمي المباشر + شارت البوت الذكي -->
+      <!-- 5. شارت TradingView الرسمي المباشر (حصرياً بدون الشارت القديم) -->
       <div class="card p-5">
-        <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
-          <div class="flex flex-wrap items-center gap-2">
-            <button onclick="switchChartMode('tv')" id="tabTvBtn" class="px-4 py-2 rounded-lg text-sm font-black bg-blue-600 text-white transition shadow">
-              📊 شارت TradingView الرسمي المباشر (Live)
-            </button>
-            <button onclick="switchChartMode('ai')" id="tabAiBtn" class="px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition">
-              🤖 شارت البوت الذكي (خطوط POC + الفيبو + Backtest)
-            </button>
-          </div>
-
-          <div id="aiLegend" class="hidden flex-wrap items-center gap-3 text-xs font-bold">
-            <span class="text-blue-400">━ الدخول</span>
-            <span class="text-red-400">┅ SL</span>
-            <span class="text-emerald-400">━ TP1/TP2</span>
-            <span class="text-pink-400">━ تمركز السيولة (POC)</span>
-            <span class="text-yellow-300">┅ فيبو 61.8%</span>
-          </div>
+        <div class="flex flex-wrap justify-between items-center mb-3 gap-3">
+          <h2 class="text-lg font-black text-white flex items-center gap-2">
+            📊 شارت TradingView الرسمي المباشر (OANDA Live Feed)
+          </h2>
+          <span class="text-xs text-emerald-400 font-bold">مربوط تلقائياً مع محرك الذكاء الاصطناعي ومستويات الدخول</span>
         </div>
 
-        <!-- حاوية شارت TradingView الرسمي -->
-        <div id="tv_chart_wrapper" class="w-full h-[540px] rounded-xl overflow-hidden border border-gray-800">
+        <div class="w-full h-[560px] rounded-xl overflow-hidden border border-gray-800">
           <div id="tradingview_official_widget" class="w-full h-full"></div>
         </div>
-
-        <!-- حاوية شارت البوت الذكي -->
-        <div id="ai_custom_chart" class="hidden w-full h-[520px] rounded-xl overflow-hidden border border-gray-800 relative"></div>
       </div>
 
       <!-- 6. مستويات الصفقة وحاسبة اللوت -->
       <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div class="card p-5 md:col-span-2">
-          <h2 class="text-lg font-bold text-amber-400 mb-4">🎯 مستويات الصفقة المعتمدة (تظهر فقط عند وجود صعود قوي أو هبوط قوي)</h2>
+          <h2 class="text-lg font-bold text-amber-400 mb-4">🎯 مستويات الصفقة المعتمدة (محسوبة على سعر TradingView اللحظي)</h2>
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
             <div class="bg-[#1c2233] p-3 rounded-xl border border-blue-500/30">
               <div class="text-xs text-gray-400">الدخول</div>
-              <div class="text-base font-black text-blue-400 mt-1" id="entryZone">--</div>
+              <div class="text-base font-black text-blue-400 mt-1 tabular-nums" id="entryZone">--</div>
             </div>
             <div class="bg-[#1c2233] p-3 rounded-xl border border-red-500/30">
-              <div class="text-xs text-gray-400">الستوب (SL)</div>
-              <div class="text-base font-black text-red-400 mt-1" id="stopLoss">--</div>
+              <div class="text-xs text-gray-400">الستوب الهيكلي (SL)</div>
+              <div class="text-base font-black text-red-400 mt-1 tabular-nums" id="stopLoss">--</div>
             </div>
             <div class="bg-[#1c2233] p-3 rounded-xl border border-emerald-500/30">
               <div class="text-xs text-gray-400">الهدف الأول</div>
-              <div class="text-base font-black text-emerald-400 mt-1" id="tp1">--</div>
+              <div class="text-base font-black text-emerald-400 mt-1 tabular-nums" id="tp1">--</div>
             </div>
             <div class="bg-[#1c2233] p-3 rounded-xl border border-green-400/40">
               <div class="text-xs text-gray-400">الهدف الثاني</div>
-              <div class="text-base font-black text-green-300 mt-1" id="tp2">--</div>
+              <div class="text-base font-black text-green-300 mt-1 tabular-nums" id="tp2">--</div>
             </div>
           </div>
         </div>
@@ -241,12 +219,12 @@
         </div>
       </div>
 
-      <!-- 7. سجل المراجعة الذاتية للصفقات القوية المؤكدة فقط -->
+      <!-- 7. لوحة نتائج الـ Backtest وسجل المراقبة الذاتية -->
       <div class="card p-5">
         <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
           <div>
             <h2 class="text-lg font-bold text-emerald-400">📊 سجل المراقبة الذاتية للصفقات القوية المؤكدة فقط (+85%)</h2>
-            <p class="text-xs text-gray-400">لا يسجل هذا الجدول إلا صفقات "صعود قوي" أو "هبوط قوي" المؤكدة أثناء فتح السوق فقط</p>
+            <p class="text-xs text-gray-400">يتابع الصفقات المفتوحة لحظياً كل ثانيتين على سعر TradingView مع تأمين الدخول التلقائي (Auto Break-Even)</p>
           </div>
           <div class="flex items-center gap-3">
             <span class="text-sm font-bold text-white" id="ledgerSummaryBadge">جاري الفحص...</span>
@@ -274,7 +252,7 @@
 
       <!-- 8. تفصيل المدارس السبع -->
       <div>
-        <h2 class="text-lg font-bold text-white mb-3">🧠 تقارير المدارس السبع + الدايفرجنس + الـ POC</h2>
+        <h2 class="text-lg font-bold text-white mb-3">🧠 تقارير المدارس السبع (محسوبة على مؤشرات TradingView الحية)</h2>
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div class="card p-5 border-r-4 border-r-amber-400">
             <h3 class="font-bold text-amber-400 text-sm mb-2">1️⃣ SMC / ICT والسيولة</h3>
@@ -285,7 +263,7 @@
             <p class="text-sm text-gray-200 leading-relaxed" id="schoolFib">--</p>
           </div>
           <div class="card p-5 border-r-4 border-r-cyan-400">
-            <h3 class="font-bold text-cyan-400 text-sm mb-2">3️⃣ المحاور البنكية (Pivots)</h3>
+            <h3 class="font-bold text-cyan-400 text-sm mb-2">3️⃣ المحاور البنكية (TradingView Pivots)</h3>
             <p class="text-sm text-gray-200 leading-relaxed" id="schoolPivots">--</p>
           </div>
           <div class="card p-5 border-r-4 border-r-rose-400">
@@ -313,11 +291,8 @@
   <script>
     let currentSymbol = 'XAUUSD';
     let currentTimeframe = '15m';
-    let currentChartMode = 'tv'; // 'tv' لشارت TradingView الرسمي أو 'ai' لشارت البوت
     let lastAnalysisData = null;
-    let showBacktestMarkers = false;
-    let chartInstance = null;
-    let candleSeries = null;
+    let previousTicks = {};
     const socket = io();
 
     const TV_SYMBOL_MAP = {
@@ -333,6 +308,93 @@
       '1h': '60',
       '1d': 'D'
     };
+
+    /**
+     * تنسيق السعر بستايل منصات التداول الاحترافية (إبراز آخر رقم Pipette بحجم أصغر علوي)
+     */
+    function formatPipettePrice(priceStr, sym) {
+      if (!priceStr || priceStr === 'مغلق' || priceStr === '--') return priceStr;
+      const s = String(priceStr);
+      if ((sym === 'EURUSD' || sym === 'GBPUSD' || sym === 'USDJPY') && s.includes('.') && s.length >= 6) {
+        const mainPart = s.slice(0, -1);
+        const pipette = s.slice(-1);
+        return `${mainPart}<sup class="text-[0.65em] opacity-85">${pipette}</sup>`;
+      }
+      return s;
+    }
+
+    /**
+     * استقبال التيكات الحية كل ثانيتين من السيرفر وتحديث العداد الرئيسي وشريط الأسعار
+     */
+    socket.on('live_ticks', (ticks) => {
+      renderLiveWatchlist(ticks);
+
+      // تحديث السعر الرئيسي الكبير للزوج المفتوح حالياً لحظياً
+      const curTick = ticks[currentSymbol];
+      if (curTick) {
+        const priceEl = document.getElementById('currentPrice');
+        const boxEl = document.getElementById('liveMainPriceBox');
+        const changeEl = document.getElementById('liveMainChangeBox');
+        const prevP = previousTicks[currentSymbol]?.price;
+
+        if (priceEl) {
+          priceEl.innerHTML = formatPipettePrice(curTick.priceStr, currentSymbol);
+          if (prevP && curTick.price !== prevP) {
+            boxEl.classList.remove('tick-up', 'tick-down');
+            void boxEl.offsetWidth;
+            boxEl.classList.add(curTick.price > prevP ? 'tick-up' : 'tick-down');
+          }
+        }
+
+        if (changeEl) {
+          const isUp = curTick.changeAbs >= 0;
+          const sign = isUp ? '+' : '';
+          changeEl.className = `text-sm font-black tabular-nums px-2.5 py-1 rounded-lg ${
+            isUp ? 'bg-emerald-500/15 text-emerald-400' : 'bg-rose-500/15 text-rose-400'
+          }`;
+          changeEl.innerText = `${sign}${curTick.changeAbs} (${sign}${curTick.changePercent}%)`;
+        }
+      }
+
+      if (ticks['DXY']) {
+        const dxyEl = document.getElementById('dxyPrice');
+        if (dxyEl) dxyEl.innerText = `DXY: ${ticks['DXY'].priceStr}`;
+      }
+
+      previousTicks = JSON.parse(JSON.stringify(ticks));
+    });
+
+    function renderLiveWatchlist(ticks) {
+      const bar = document.getElementById('liveWatchlistBar');
+      if (!bar) return;
+      const order = ['XAUUSD', 'EURUSD', 'GBPUSD', 'USDJPY', 'DXY'];
+
+      bar.innerHTML = order.map(sym => {
+        const t = ticks[sym];
+        if (!t) return '';
+        const prev = previousTicks[sym]?.price;
+        const isUp = t.changeAbs >= 0;
+        const sign = isUp ? '+' : '';
+        const flashClass = prev && t.price !== prev ? (t.price > prev ? 'tick-up' : 'tick-down') : '';
+        const colorClass = isUp ? 'text-emerald-400' : 'text-rose-400';
+        const clickable = sym !== 'DXY' ? `onclick="selectSymbol('${sym}')" class="cursor-pointer bg-[#141926] hover:bg-[#1c2336] p-3 rounded-xl border ${currentSymbol === sym ? 'border-emerald-500' : 'border-gray-800'} transition"` : `class="bg-[#141926] p-3 rounded-xl border border-gray-800"`;
+
+        return `
+          <div ${clickable}>
+            <div class="flex justify-between items-center text-xs font-bold text-gray-400 mb-1">
+              <span class="text-white font-black">${sym}</span>
+              <span class="${colorClass} tabular-nums">${sign}${t.changePercent}%</span>
+            </div>
+            <div class="flex justify-between items-baseline">
+              <span class="text-xl font-black text-white tabular-nums px-1 rounded ${flashClass}">
+                ${formatPipettePrice(t.priceStr, sym)}
+              </span>
+              <span class="text-xs font-bold ${colorClass} tabular-nums">${sign}${t.changeAbs}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
 
     function renderTradingViewWidget() {
       const container = document.getElementById('tradingview_official_widget');
@@ -359,36 +421,21 @@
       });
     }
 
-    function switchChartMode(mode) {
-      currentChartMode = mode;
-      const tvWrapper = document.getElementById('tv_chart_wrapper');
-      const aiWrapper = document.getElementById('ai_custom_chart');
-      const aiLegend = document.getElementById('aiLegend');
-      const tabTvBtn = document.getElementById('tabTvBtn');
-      const tabAiBtn = document.getElementById('tabAiBtn');
-
-      if (mode === 'tv') {
-        tvWrapper.classList.remove('hidden');
-        aiWrapper.classList.add('hidden');
-        aiLegend.classList.add('hidden');
-        tabTvBtn.className = "px-4 py-2 rounded-lg text-sm font-black bg-blue-600 text-white transition shadow";
-        tabAiBtn.className = "px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
-        renderTradingViewWidget();
-      } else {
-        tvWrapper.classList.add('hidden');
-        aiWrapper.classList.remove('hidden');
-        aiLegend.classList.remove('hidden');
-        aiLegend.classList.add('flex');
-        tabAiBtn.className = "px-4 py-2 rounded-lg text-sm font-black bg-emerald-500 text-black transition shadow";
-        tabTvBtn.className = "px-4 py-2 rounded-lg text-sm font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
-        if (lastAnalysisData) renderAnnotatedChart(lastAnalysisData);
-      }
-    }
-
     function extractNumber(str) {
       if (!str) return null;
       const match = String(str).match(/\d+(\.\d+)?/);
       return match ? parseFloat(match[0]) : null;
+    }
+
+    async function loadInitialTicks() {
+      try {
+        const res = await fetch('/api/live-ticks');
+        const ticks = await res.json();
+        if (ticks && Object.keys(ticks).length > 0) {
+          renderLiveWatchlist(ticks);
+          previousTicks = ticks;
+        }
+      } catch (e) {}
     }
 
     async function loadCurrencyStrength() {
@@ -418,18 +465,7 @@
             </div>
           `;
         }).join('');
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    function toggleBacktestMode() {
-      showBacktestMarkers = !showBacktestMarkers;
-      const btn = document.getElementById('backtestBtn');
-      btn.innerText = showBacktestMarkers
-        ? "✅ إخفاء أسهم الـ Backtest من الشارت"
-        : "🧪 إظهار الصفقات المؤكدة (Backtest) على الشارت";
-      switchChartMode('ai');
+      } catch (e) {}
     }
 
     async function runMarketScanner() {
@@ -438,7 +474,7 @@
       const grid = document.getElementById('scannerGrid');
       scanBtn.disabled = true;
       container.classList.remove('hidden');
-      grid.innerHTML = `<div class="col-span-4 text-center py-4 text-gray-300 font-bold">جاري المسح...</div>`;
+      grid.innerHTML = `<div class="col-span-4 text-center py-4 text-gray-300 font-bold">جاري فحص كل الأزواج من TradingView...</div>`;
 
       try {
         const res = await fetch(`/api/scan-all?timeframe=${currentTimeframe}`);
@@ -452,9 +488,9 @@
             <div>
               <div class="font-black text-white text-lg">${item.symbol}</div>
               <div class="text-2xl font-black mt-1 text-emerald-400">${item.signal}</div>
-              <div class="text-xs text-gray-400 mt-1">التوافق: ${item.confidenceScore}% | السعر: ${item.currentPrice}</div>
+              <div class="text-xs text-gray-400 mt-1 tabular-nums">التوافق: ${item.confidenceScore}% | السعر: ${item.currentPrice}</div>
             </div>
-            <button onclick="selectSymbol('${item.symbol}')" class="mt-4 w-full bg-blue-600 hover:bg-blue-500 text-white py-1.5 rounded-lg text-xs font-bold">📈 عرض الشارت</button>
+            <button onclick="selectSymbol('${item.symbol}')" class="mt-4 w-full bg-blue-600 hover:bg-blue-500 text-white py-1.5 rounded-lg text-xs font-bold">📈 عرض الشارت والتحليل</button>
           </div>
         `).join('');
       } catch (err) {
@@ -462,71 +498,6 @@
       } finally {
         scanBtn.disabled = false;
       }
-    }
-
-    function renderAnnotatedChart(data) {
-      const container = document.getElementById('ai_custom_chart');
-      if (!container) return;
-      container.innerHTML = '';
-
-      if (data.sessionInfo?.isMarketClosed || !data.candles || data.candles.length === 0) {
-        container.innerHTML = `<div class="flex items-center justify-center h-full text-amber-400 font-bold text-lg">🛑 الشارت والتحليل متوقفان حالياً لأن السوق في عطلة نهاية الأسبوع</div>`;
-        return;
-      }
-
-      chartInstance = LightweightCharts.createChart(container, {
-        width: container.clientWidth || 800,
-        height: 520,
-        layout: { background: { type: 'solid', color: '#0e121b' }, textColor: '#cbd5e1' },
-        grid: { vertLines: { color: '#1e2436' }, horzLines: { color: '#1e2436' } },
-        rightPriceScale: { borderColor: '#2b344b' },
-        timeScale: { borderColor: '#2b344b', timeVisible: true },
-      });
-      candleSeries = chartInstance.addCandlestickSeries({ upColor: '#00e676', downColor: '#ff1744', borderVisible: false });
-
-      const rawCandles = data.candles || [];
-      const formattedCandles = [];
-      const seenTimes = new Set();
-      rawCandles.forEach(c => {
-        const unixTime = Math.floor(new Date(c.time).getTime() / 1000);
-        if (!seenTimes.has(unixTime)) {
-          seenTimes.add(unixTime);
-          formattedCandles.push({ time: unixTime, open: c.open, high: c.high, low: c.low, close: c.close });
-        }
-      });
-      formattedCandles.sort((a, b) => a.time - b.time);
-      candleSeries.setData(formattedCandles);
-
-      if (showBacktestMarkers && data.backtestReport?.markers) {
-        candleSeries.setMarkers(data.backtestReport.markers);
-      } else if (formattedCandles.length > 0 && (data.signal === 'صعود قوي' || data.signal === 'هبوط قوي')) {
-        const lastCandle = formattedCandles[formattedCandles.length - 1];
-        const isBull = data.signal === 'صعود قوي';
-        candleSeries.setMarkers([
-          {
-            time: lastCandle.time,
-            position: isBull ? 'belowBar' : 'aboveBar',
-            color: isBull ? '#00e676' : '#ff1744',
-            shape: isBull ? 'arrowUp' : 'arrowDown',
-            text: `🔥 ${data.signal} (${data.confidenceScore}%)`,
-          }
-        ]);
-      }
-
-      const addLevel = (price, title, color, lineStyle = 0, width = 2) => {
-        if (!price || isNaN(price)) return;
-        candleSeries.createPriceLine({ price, color, lineWidth: width, lineStyle, axisLabelVisible: true, title });
-      };
-
-      addLevel(extractNumber(data.tradeSetup?.entryZone), '🎯 دخول مؤكد', '#3b82f6', 0, 2);
-      addLevel(extractNumber(data.tradeSetup?.stopLoss), '🛑 SL', '#ef4444', 2, 2);
-      addLevel(extractNumber(data.tradeSetup?.takeProfit1), '✅ TP1', '#10b981', 2, 2);
-      addLevel(extractNumber(data.tradeSetup?.takeProfit2), '🚀 TP2', '#00e676', 0, 2);
-      addLevel(data.rawIndicators?.volumeAnalysis?.pocPrice, '🏦 Volume POC', '#ec4899', 0, 3);
-      addLevel(data.rawIndicators?.fibonacci?.fib618, '🌀 فيبو 61.8%', '#fde047', 2, 1);
-      addLevel(data.rawIndicators?.pivots?.pivotP, '🏛️ المحور P', '#67e8f9', 2, 1);
-
-      chartInstance.timeScale().fitContent();
     }
 
     function selectSymbol(sym) {
@@ -551,6 +522,7 @@
       document.getElementById('refreshBtn').disabled = true;
 
       try {
+        loadInitialTicks();
         loadCurrencyStrength();
         const res = await fetch(`/api/analyze?symbol=${currentSymbol}&timeframe=${currentTimeframe}&force=${forceRefresh}`);
         const data = await res.json();
@@ -559,11 +531,7 @@
         document.getElementById('loader').classList.add('hidden');
         document.getElementById('dashboard').classList.remove('hidden');
         renderDashboard(data);
-        if (currentChartMode === 'tv') {
-          renderTradingViewWidget();
-        } else {
-          renderAnnotatedChart(data);
-        }
+        renderTradingViewWidget();
       } catch (err) {
         alert("⚠️ تنبيه: " + err.message);
         if (lastAnalysisData) document.getElementById('dashboard').classList.remove('hidden');
@@ -593,7 +561,9 @@
       const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val ?? ''; };
 
       setTxt('pairTitle', `${data.symbol} • فريم ${data.timeframe}`);
-      setTxt('currentPrice', data.currentPrice);
+      const priceEl = document.getElementById('currentPrice');
+      if (priceEl) priceEl.innerHTML = formatPipettePrice(data.currentPrice, data.symbol);
+
       setTxt('dxyPrice', `DXY: ${data.dxyPrice}`);
       setTxt('pocBadge', `POC: ${data.rawIndicators?.volumeAnalysis?.pocPrice || '-'}`);
       setTxt('divergenceBadge', data.rawIndicators?.classical?.divergenceStatus || '');
@@ -607,15 +577,9 @@
       }
 
       setTxt('mtfBadge', data.mtfReport?.mtfStatus);
-      setTxt('consensusBadge', `⚖️ ${data.consensusCount || 'مراجعة 7 مدارس'}`);
+      setTxt('consensusBadge', `⚖️ ${data.consensusCount || 'مراجعة 8 معايير'}`);
       setTxt('macroNewsIntegrationText', data.macroNewsIntegration);
       setTxt('aiFinalReviewText', data.aiFinalReview || data.summaryArabic);
-
-      if (data.backtestReport) {
-        setTxt('btWinRate', `${data.backtestReport.winRate}%`);
-        setTxt('btWinsLosses', `${data.backtestReport.wins}W / ${data.backtestReport.losses}L`);
-        setTxt('btProfitFactor', data.backtestReport.profitFactor);
-      }
 
       if (data.ledgerStats) {
         const st = data.ledgerStats;
@@ -627,9 +591,9 @@
           } else {
             tbody.innerHTML = st.recentTrades.map(t => {
               const statusCol = t.status === 'WIN' ? 'text-emerald-400 font-black' : t.status === 'LOSS' ? 'text-rose-400 font-black' : 'text-amber-300 font-bold';
-              const statusAr = t.status === 'WIN' ? '✅ حققت الهدف' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن';
+              const statusAr = t.status === 'WIN' ? '✅ حققت الهدف / مؤمنة' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن (مراقبة حية)';
               return `
-                <tr class="hover:bg-white/5">
+                <tr class="hover:bg-white/5 tabular-nums">
                   <td class="py-2.5 font-bold">${t.symbol} (${t.timeframe})</td>
                   <td class="py-2.5">${t.signal} (${t.confidence}%)</td>
                   <td class="py-2.5">${t.entry}</td>
