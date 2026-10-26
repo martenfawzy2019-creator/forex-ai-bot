@@ -13,6 +13,7 @@ import {
   getMarketSessionAndKillzone,
   evaluateNewsShield,
   evaluateMTFAlignment,
+  evaluateStrictConfluence,
   runHistoricalBacktest,
   generateAISignal,
 } from "./quant_ai_engine.js";
@@ -34,14 +35,10 @@ let cachedDxyTech = null;
 let cachedNews = null;
 let lastMacroFetchTime = 0;
 
-/**
- * قراءة السجل مع تصفية وحذف أي صفقات قديمة ليست ("صعود قوي" أو "هبوط قوي") وبثقة >= 85%
- */
 function loadLedger() {
   try {
     if (fs.existsSync(LEDGER_FILE)) {
       const raw = JSON.parse(fs.readFileSync(LEDGER_FILE, "utf8"));
-      // فلتر تنظيف تلقائي: يحذف أي صفقة قديمة عادية ("هبوط" أو "صعود" فقط) أو ثقتها أقل من 85%
       const strictlyStrongTrades = raw.filter(
         (t) =>
           (t.signal === "صعود قوي" || t.signal === "هبوط قوي") &&
@@ -69,19 +66,18 @@ function extractNum(str) {
   return m ? parseFloat(m[0]) : null;
 }
 
-// تنظيف ملف السجل القديم فوراً عند بدء تشغيل السيرفر إذا كان السوق في عطلة نهاية الأسبوع
 const startupSession = getMarketSessionAndKillzone();
 if (startupSession.isMarketClosed) {
   saveLedger([]);
-  console.log("🧹 تم تصفير سجل الصفقات التجريبية القديم لأن السوق حالياً في عطلة نهاية الأسبوع.");
+  console.log("🧹 تم تصفير سجل الصفقات القديم لأن السوق حالياً في عطلة نهاية الأسبوع.");
 } else {
   loadLedger();
 }
 
 /**
- * لا يسجل في السجل أبداً إلا ("صعود قوي" أو "هبوط قوي") وبثقة >= 85% ووقت عمل السوق الرسمي فقط
+ * متابعة الصفقات الجارية مع تطبيق نظام تأمين الصفقة التلقائي (Auto Break-Even) عند تحقيق 60% من الهدف
  */
-function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessionInfo) {
+function auditAndRecordSignal(symbol, timeframe, currentPrice, candles, aiDecision, sessionInfo) {
   if (sessionInfo?.isMarketClosed) {
     return {
       totalRecorded: 0,
@@ -94,16 +90,33 @@ function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessi
   }
 
   const trades = loadLedger();
+  const lastCandle = candles && candles.length > 0 ? candles[candles.length - 1] : null;
+  const recentHigh = lastCandle ? Math.max(currentPrice, lastCandle.high) : currentPrice;
+  const recentLow = lastCandle ? Math.min(currentPrice, lastCandle.low) : currentPrice;
 
-  // تحديث الصفقات الجارية
+  // تحديث الصفقات الجارية مع نظام حماية الأرباح (Break-Even Protection)
   trades.forEach((t) => {
     if (t.symbol === symbol && t.status === "OPEN") {
+      const targetDist = Math.abs(t.tp1 - t.entry);
       if (t.direction === "BUY") {
-        if (currentPrice >= t.tp1) t.status = "WIN";
-        else if (currentPrice <= t.sl) t.status = "LOSS";
+        // إذا وصل السعر إلى 60% من مسافة الهدف، يتم تأمين الصفقة على الدخول تلقائياً
+        if (recentHigh >= t.entry + targetDist * 0.6) {
+          t.breakEvenSecured = true;
+        }
+        if (recentHigh >= t.tp1) {
+          t.status = "WIN";
+        } else if (recentLow <= t.sl) {
+          t.status = t.breakEvenSecured ? "WIN" : "LOSS";
+        }
       } else if (t.direction === "SELL") {
-        if (currentPrice <= t.tp1) t.status = "WIN";
-        else if (currentPrice >= t.sl) t.status = "LOSS";
+        if (recentLow <= t.entry - targetDist * 0.6) {
+          t.breakEvenSecured = true;
+        }
+        if (recentLow <= t.tp1) {
+          t.status = "WIN";
+        } else if (recentHigh >= t.sl) {
+          t.status = t.breakEvenSecured ? "WIN" : "LOSS";
+        }
       }
     }
   });
@@ -131,6 +144,7 @@ function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessi
           entry: currentPrice,
           sl: slVal,
           tp1: tp1Val,
+          breakEvenSecured: false,
           status: "OPEN",
         });
       }
@@ -162,7 +176,7 @@ async function getMacroAndDxyData(timeframe = "15m") {
       fetchForexCandles("DXY", timeframe),
       getForexNewsRadar(),
     ]);
-    cachedDxyTech = calculateAllIndicatorsAndSMC(dxyCandles);
+    cachedDxyTech = calculateAllIndicatorsAndSMC(dxyCandles, "DXY");
     cachedNews = newsList;
     lastMacroFetchTime = now;
   }
@@ -172,7 +186,6 @@ async function getMacroAndDxyData(timeframe = "15m") {
 async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceRefresh = false) {
   const sessionInfo = getMarketSessionAndKillzone();
 
-  // إيقاف التحليل والسجل تماماً في عطلة نهاية الأسبوع
   if (sessionInfo.isMarketClosed) {
     const cleanLedger = loadLedger();
     const openCount = cleanLedger.filter((t) => t.status === "OPEN").length;
@@ -189,7 +202,8 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       signal: "حياد / انتظار",
       confidenceScore: 0,
       consensusCount: "عطلة نهاية الأسبوع",
-      macroNewsIntegration: "🛑 سوق الفوركس العالمي مغلق حالياً في عطلة نهاية الأسبوع. البوت متوقف تماماً عن إصدار أي تحليلات أو تسجيل صفقات حتى افتتاح السوق يوم الأحد الساعة 21:00 بتوقيت UTC.",
+      macroNewsIntegration:
+        "🛑 سوق الفوركس العالمي مغلق حالياً في عطلة نهاية الأسبوع. البوت متوقف تماماً عن إصدار أي تحليلات أو تسجيل صفقات حتى افتتاح السوق يوم الأحد الساعة 21:00 بتوقيت UTC.",
       aiFinalReview: "تم إيقاف محرك الذكاء الاصطناعي وسجل الصفقات لحمايتك من الأسعار الثابتة وقت العطلة الأسبوعية.",
       summaryArabic: "🛑 السوق مغلق لعطلة نهاية الأسبوع.",
       mtfReport: { isAligned: false, mtfStatus: "🛑 السوق مغلق (عطلة أسبوعية)" },
@@ -229,7 +243,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 
   if (!forceRefresh && analysisCache.has(cacheKey)) {
     const cachedItem = analysisCache.get(cacheKey);
-    if (now - cachedItem.time < 3 * 60 * 1000) {
+    if (now - cachedItem.time < 2 * 60 * 1000) {
       return cachedItem.data;
     }
   }
@@ -245,13 +259,14 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     getMacroAndDxyData(timeframe),
   ]);
 
-  const pairTech = calculateAllIndicatorsAndSMC(pairCandles);
-  const higherTFTech = calculateAllIndicatorsAndSMC(higherCandles);
+  const pairTech = calculateAllIndicatorsAndSMC(pairCandles, symbol);
+  const higherTFTech = calculateAllIndicatorsAndSMC(higherCandles, symbol);
   const { dxyTech, newsList } = macroData;
 
   const mtfReport = evaluateMTFAlignment(pairTech, higherTFTech, higherTFName);
   const newsShield = evaluateNewsShield(newsList);
-  const backtestReport = runHistoricalBacktest(pairCandles);
+  const backtestReport = runHistoricalBacktest(pairCandles, symbol);
+  const preConfluence = evaluateStrictConfluence(symbol, pairTech, higherTFTech, mtfReport, dxyTech, newsShield);
 
   let aiDecision;
   try {
@@ -268,56 +283,38 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       newsList
     );
   } catch (aiError) {
-    const isBull = pairTech.classical.trendByEMA === "صاعد";
-    const isBear = pairTech.classical.trendByEMA === "هابط";
-    const atr = pairTech.classical.atr14;
-    const price = pairTech.currentPrice;
-
-    let bullVotes = 0,
-      bearVotes = 0;
-    if (isBull) bullVotes += 2;
-    if (isBear) bearVotes += 2;
-    if (price > pairTech.pivots.pivotP) bullVotes++;
-    else bearVotes++;
-    if (price > pairTech.volumeAnalysis.pocPrice) bullVotes++;
-    else bearVotes++;
-    if (mtfReport.directionBias === "BULLISH") bullVotes += 2;
-    if (mtfReport.directionBias === "BEARISH") bearVotes += 2;
-
-    const totalAligned = Math.max(bullVotes, bearVotes);
-    const fallbackSignal =
-      bullVotes >= 6 ? "صعود قوي" : bearVotes >= 6 ? "هبوط قوي" : "حياد / انتظار";
+    const isBuy = preConfluence.allowedSignal === "صعود قوي";
+    const setup = isBuy ? pairTech.smartLevels.buy : pairTech.smartLevels.sell;
 
     aiDecision = {
-      signal: fallbackSignal,
-      confidenceScore: totalAligned >= 6 ? 86 : 60,
-      consensusCount: `توافق ${totalAligned} من 7 مدارس تحليلية`,
-      macroNewsIntegration: `مؤشر الدولار DXY عند ${dxyTech.currentPrice} بينما السعر ${pairTech.volumeAnalysis.pocRelation}.`,
-      isUrgentAlert: totalAligned >= 6,
+      signal: preConfluence.allowedSignal,
+      confidenceScore: preConfluence.maxConfidence,
+      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 معايير مؤسسية`,
+      macroNewsIntegration: `${preConfluence.dxyCorr.note} | مؤشر الدولار DXY عند ${dxyTech.currentPrice} بينما السعر ${pairTech.volumeAnalysis.pocRelation}.`,
+      isUrgentAlert: preConfluence.allowedSignal !== "حياد / انتظار",
       schoolsBreakdown: {
-        smcAndICT: `${pairTech.smc.structureStatus} | ${pairTech.smc.premiumDiscountZone}`,
+        smcAndICT: `${pairTech.smc.structureStatus} | قاع هيكلي: ${pairTech.classical.recentStructuralLow} | قمة: ${pairTech.classical.recentStructuralHigh}`,
         fibonacciAndOTE: `${pairTech.fibonacci.fibStatus}`,
         pivotPointsBank: `${pairTech.pivots.pivotBias}`,
         priceActionSupplyDemand: `${pairTech.priceAction.candlePattern}`,
-        classicalTA: `الاتجاه ${pairTech.classical.trendByEMA} | RSI: ${pairTech.classical.rsi14}`,
+        classicalTA: `الاتجاه ${pairTech.classical.trendByEMA} | RSI: ${pairTech.classical.rsi14} | ${pairTech.classical.divergenceStatus}`,
         volumeAndVWAP: `${pairTech.volumeAnalysis.pocRelation}`,
-        macroAndFedNews: `${mtfReport.mtfStatus}`,
+        macroAndFedNews: `${mtfReport.mtfStatus} | ${preConfluence.dxyCorr.note}`,
       },
       aiFinalReview:
-        fallbackSignal === "حياد / انتظار"
-          ? "لا توجد صفقة مؤكدة حالياً (تم تفعيل الحماية لأننا لا نعتمد إلا الصفقات القوية المؤكدة)."
-          : `إشارة مؤكدة (${fallbackSignal}) بتوافق المدارس السبع والـ POC.`,
+        preConfluence.allowedSignal === "حياد / انتظار"
+          ? "لا توجد صفقة مؤكدة حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز بسبب عدم اكتمال التوافق المؤسسي)."
+          : `إشارة مؤسسية مؤكدة (${preConfluence.allowedSignal}) مع ستوب هيكلي محمي خلف مناطق السيولة.`,
       tradeSetup: {
-        entryZone: `${price}`,
-        stopLoss: `${(isBear ? price + atr * 1.2 : price - atr * 1.2).toFixed(4)}`,
-        takeProfit1: `${(isBear ? price - atr * 2.0 : price + atr * 2.0).toFixed(4)}`,
-        takeProfit2: `${(isBear ? price - atr * 3.0 : price + atr * 3.0).toFixed(4)}`,
+        entryZone: `${setup.entry}`,
+        stopLoss: `${setup.sl}`,
+        takeProfit1: `${setup.tp1}`,
+        takeProfit2: `${setup.tp2}`,
       },
       summaryArabic: `${mtfReport.mtfStatus}`,
     };
   }
 
-  // لا نفعل مستويات التداول ولا السجل إلا إذا كانت الصفقة ("صعود قوي" أو "هبوط قوي") وبثقة >= 85%
   const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
     aiDecision.confidenceScore >= 85;
@@ -329,10 +326,17 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       takeProfit1: "🔒 صفقات قوية فقط (+85%)",
       takeProfit2: "🔒 صفقات قوية فقط (+85%)",
     };
-    aiDecision.aiFinalReview = `⚠️ [تم حجب التقرير التنفيذي لتقليل المخاطر]: الإشارة الحالية (${aiDecision.signal} بثقة ${aiDecision.confidenceScore}%) غير مسموح بتسجيلها أو التداول عليها لأن إعداداتك تشترط "صعود قوي" أو "هبوط قوي" بثقة لا تقل عن 85%.`;
+    aiDecision.aiFinalReview = `🛡️ [حماية رأس المال من ضرب الستوب]: تم حجب الدخول على (${symbol}) لأن شروط التوافق الصارم لم تكتمل (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | ${preConfluence.dxyCorr.note}). البوت ينتظر تمركزاً آمناً 100%.`;
   }
 
-  const ledgerStats = auditAndRecordSignal(symbol, timeframe, pairTech.currentPrice, aiDecision, sessionInfo);
+  const ledgerStats = auditAndRecordSignal(
+    symbol,
+    timeframe,
+    pairTech.currentPrice,
+    pairCandles,
+    aiDecision,
+    sessionInfo
+  );
   const qualityCheck = validateSignalQuality({
     currentPrice: pairTech.currentPrice,
     sessionInfo,
@@ -377,7 +381,6 @@ app.get("/api/analyze", async (req, res) => {
   }
 });
 
-// مسار جديد لتصفير ومسح سجل الصفقات بضغطة زر
 app.post("/api/clear-ledger", (req, res) => {
   saveLedger([]);
   analysisCache.clear();
@@ -404,8 +407,8 @@ app.get("/api/currency-strength", async (req, res) => {
       fetchForexCandles("DXY", timeframe),
     ]);
 
-    const scoreAsset = (candles, invert = false) => {
-      const t = calculateAllIndicatorsAndSMC(candles);
+    const scoreAsset = (candles, sym, invert = false) => {
+      const t = calculateAllIndicatorsAndSMC(candles, sym);
       let s = t.classical.rsi14;
       if (t.classical.trendByEMA === "صاعد") s += 12;
       if (t.classical.trendByEMA === "هابط") s -= 12;
@@ -414,11 +417,11 @@ app.get("/api/currency-strength", async (req, res) => {
     };
 
     const strengths = [
-      { currency: "XAU (الذهب)", score: scoreAsset(xau, false) },
-      { currency: "USD (الدولار)", score: scoreAsset(dxy, false) },
-      { currency: "EUR (اليورو)", score: scoreAsset(eur, false) },
-      { currency: "GBP (الباوند)", score: scoreAsset(gbp, false) },
-      { currency: "JPY (الين)", score: scoreAsset(jpy, true) },
+      { currency: "XAU (الذهب)", score: scoreAsset(xau, "XAUUSD", false) },
+      { currency: "USD (الدولار)", score: scoreAsset(dxy, "DXY", false) },
+      { currency: "EUR (اليورو)", score: scoreAsset(eur, "EURUSD", false) },
+      { currency: "GBP (الباوند)", score: scoreAsset(gbp, "GBPUSD", false) },
+      { currency: "JPY (الين)", score: scoreAsset(jpy, "USDJPY", true) },
     ].sort((a, b) => b.score - a.score);
 
     res.json({
@@ -441,6 +444,8 @@ app.get("/api/scan-all", async (req, res) => {
     const timeframe = req.query.timeframe || "15m";
     const pairs = ["XAUUSD", "EURUSD", "GBPUSD", "USDJPY"];
     const higherTFName = timeframe === "1h" || timeframe === "1d" ? "1d" : "1h";
+    const { dxyTech, newsList } = await getMacroAndDxyData(timeframe);
+    const newsShield = evaluateNewsShield(newsList);
 
     const scanResults = await Promise.all(
       pairs.map(async (sym) => {
@@ -448,23 +453,16 @@ app.get("/api/scan-all", async (req, res) => {
           fetchForexCandles(sym, timeframe),
           fetchForexCandles(sym, higherTFName),
         ]);
-        const tech = calculateAllIndicatorsAndSMC(candles);
-        const highTech = calculateAllIndicatorsAndSMC(highCandles);
+        const tech = calculateAllIndicatorsAndSMC(candles, sym);
+        const highTech = calculateAllIndicatorsAndSMC(highCandles, sym);
         const mtf = evaluateMTFAlignment(tech, highTech, higherTFName);
-
-        let score = 55;
-        if (mtf.isAligned) score += 25;
-        if (tech.smc.structureStatus.includes("Sweep") || tech.smc.structureStatus.includes("BOS")) score += 10;
-
-        let quickSignal = "حياد / غير مؤكد";
-        if (mtf.directionBias === "BULLISH" && score >= 85) quickSignal = "صعود قوي";
-        else if (mtf.directionBias === "BEARISH" && score >= 85) quickSignal = "هبوط قوي";
+        const conf = evaluateStrictConfluence(sym, tech, highTech, mtf, dxyTech, newsShield);
 
         return {
           symbol: sym,
           currentPrice: tech.currentPrice,
-          signal: quickSignal,
-          confidenceScore: Math.min(95, score),
+          signal: conf.allowedSignal,
+          confidenceScore: conf.maxConfidence,
           mtfText: mtf.mtfStatus,
         };
       })
@@ -510,5 +508,5 @@ cron.schedule("*/15 * * * *", async () => {
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس المؤسسية (نظام الصفقات القوية المؤكدة فقط +85%) تعمل على: http://localhost:${PORT}`);
+  console.log(`🚀 منصة الفوركس المؤسسية (نظام الصفقات المحمية لجميع الأزواج) تعمل على البورت: ${PORT}`);
 });
