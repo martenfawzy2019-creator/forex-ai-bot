@@ -381,7 +381,7 @@ function getLedgerStatsSummary() {
       lostPips: todayLostPips,
       netPips: todayNetPips,
     },
-    recentTrades: trades.slice(-40).reverse(),
+    recentTrades: trades.slice().reverse(),
   };
 }
 

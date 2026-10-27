@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>رادار الفوركس المؤسسي v5.2 | سجل دائم وحساب Pips حي</title>
+  <title>رادار الفوركس المؤسسي v5.3 | تقويم الأيام وسجل Pips الحي</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -25,7 +25,7 @@
     <div class="flex items-center gap-3">
       <span class="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
       <h1 class="text-xl font-black tracking-wide text-white">
-        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.2 | حساب Pips وسجل دائم</span>
+        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.3 | تقويم الأيام وحساب Pips</span>
       </h1>
     </div>
 
@@ -216,17 +216,20 @@
         </div>
       </div>
 
-      <!-- 7. سجل الصفقات الدائم وحصاد النقاط (Pips) اليومي -->
+      <!-- 7. سجل الصفقات الدائم وحصاد النقاط (Pips) وتقويم الأيام -->
       <div class="card p-5 space-y-4">
         <div class="flex flex-wrap justify-between items-center gap-3">
           <div>
             <h2 class="text-lg font-bold text-emerald-400">📊 سجل الصفقات الدائم وحصاد النقاط (Pips) الموحد مع تليجرام</h2>
-            <p class="text-xs text-gray-400">محفوظ بشكل دائم خارج Git + تحديث حي للسعر والـ Pips كل ثانيتين + إشعارات تأمين وتقرير يومي على تليجرام</p>
+            <p class="text-xs text-gray-400">محفوظ بشكل دائم خارج Git + تقويم تفاعلي للأيام + تحديث حي للسعر والـ Pips كل ثانيتين</p>
           </div>
 
           <div class="flex flex-wrap items-center gap-2">
             <button onclick="setLedgerFilter('today')" id="filterTodayBtn" class="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition">
               📅 صفقات اليوم
+            </button>
+            <button onclick="openCalendarModal()" id="filterDateBtn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-amber-300 border border-amber-500/30 hover:bg-gray-700 transition">
+              📆 تقويم الأيام (<span id="calendarDaysCount">0</span>)
             </button>
             <button onclick="setLedgerFilter('all')" id="filterAllBtn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition">
               🗂️ كل الأرشيف التاريخي
@@ -240,22 +243,37 @@
           </div>
         </div>
 
-        <!-- بطاقات حصاد نقاط اليوم (Daily Pips Summary) -->
+        <!-- شريط تنبيه يظهر عند استعراض يوم معين من التقويم -->
+        <div id="selectedDateBanner" class="hidden bg-amber-500/10 border border-amber-500/40 rounded-xl px-4 py-2.5 flex flex-wrap justify-between items-center gap-2">
+          <div class="text-xs font-bold text-amber-300" id="selectedDateBannerText">
+            📆 أنت تستعرض الآن أرشيف صفقات يوم: --
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="openCalendarModal()" class="text-xs bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 px-2.5 py-1 rounded-lg font-bold transition">
+              🔄 اختيار يوم آخر
+            </button>
+            <button onclick="setLedgerFilter('today')" class="text-xs bg-emerald-500 text-black px-2.5 py-1 rounded-lg font-black transition">
+              ↩ العودة لصفقات اليوم
+            </button>
+          </div>
+        </div>
+
+        <!-- بطاقات حصاد النقاط (تتحدث تلقائياً حسب التبويب أو اليوم المختار) -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
           <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
-            <div class="text-xs text-gray-400">نقاط المكسب اليوم</div>
+            <div class="text-xs text-gray-400" id="wonPipsLabel">نقاط المكسب اليوم</div>
             <div class="text-lg font-black text-emerald-400 tabular-nums mt-0.5" id="todayWonPips">+0.0 Pips</div>
           </div>
           <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
-            <div class="text-xs text-gray-400">نقاط الخسارة اليوم</div>
+            <div class="text-xs text-gray-400" id="lostPipsLabel">نقاط الخسارة اليوم</div>
             <div class="text-lg font-black text-rose-400 tabular-nums mt-0.5" id="todayLostPips">-0.0 Pips</div>
           </div>
           <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
-            <div class="text-xs text-gray-400">صافي نقاط اليوم (Net Pips)</div>
+            <div class="text-xs text-gray-400" id="netPipsLabel">صافي نقاط اليوم (Net Pips)</div>
             <div class="text-lg font-black text-amber-400 tabular-nums mt-0.5" id="todayNetPips">0.0 Pips</div>
           </div>
           <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
-            <div class="text-xs text-gray-400">ملخص الدقة</div>
+            <div class="text-xs text-gray-400" id="summaryBadgeLabel">ملخص الدقة</div>
             <div class="text-xs font-black text-white mt-1.5" id="ledgerSummaryBadge">جاري الفحص...</div>
           </div>
         </div>
@@ -316,12 +334,43 @@
     </div>
   </main>
 
+  <!-- نافذة تقويم الأيام المنبثقة (Popup Calendar Modal) -->
+  <div id="calendarModal" onclick="if(event.target === this) closeCalendarModal()" class="hidden fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-[#151924] border-2 border-amber-500/40 rounded-2xl max-w-2xl w-full max-h-[82vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 bg-[#11151e] border-b border-gray-800 flex justify-between items-center">
+        <div>
+          <h3 class="text-base font-black text-amber-400 flex items-center gap-2">
+            📆 تقويم أرشيف الأيام وحصاد النقاط (Pips)
+          </h3>
+          <p class="text-xs text-gray-400 mt-0.5">اضغط على أي يوم لعرض جميع صفقاته وإحصائياته بالتفصيل في الجدول</p>
+        </div>
+        <button onclick="closeCalendarModal()" class="text-gray-400 hover:text-white bg-gray-800/70 hover:bg-gray-700 px-3 py-1.5 rounded-lg text-xs font-bold transition">
+          ✖ إغلاق
+        </button>
+      </div>
+
+      <div id="calendarDaysList" class="p-4 overflow-y-auto space-y-2.5 divide-y divide-gray-800/40">
+        <!-- يتم ملؤه تلقائياً بقائمة الأيام وعدد الصفقات وصافي النقاط لكل يوم -->
+      </div>
+
+      <div class="px-5 py-3 bg-[#11151e] border-t border-gray-800 flex justify-between items-center">
+        <button onclick="setLedgerFilter('today'); closeCalendarModal();" class="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black">
+          📅 عرض صفقات اليوم
+        </button>
+        <button onclick="setLedgerFilter('all'); closeCalendarModal();" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700">
+          🗂️ عرض كل الأرشيف المجمع
+        </button>
+      </div>
+    </div>
+  </div>
+
   <script>
     let currentSymbol = 'XAUUSD';
     let currentTimeframe = '15m';
     let lastAnalysisData = null;
     let lastLedgerStats = null;
-    let currentLedgerFilter = 'today'; // 'today' أو 'all'
+    let currentLedgerFilter = 'today'; // 'today' | 'all' | 'date'
+    let selectedCalendarDate = null;   // 'YYYY-MM-DD'
     let previousTicks = {};
     const socket = io();
 
@@ -348,6 +397,203 @@
       if (symbol === 'XAUUSD') mult = 10;
       else if (symbol === 'USDJPY') mult = 100;
       return Number((diff * mult).toFixed(1));
+    }
+
+    // استخراج تاريخ اليوم للصفقة بصيغة YYYY-MM-DD بتوقيت القاهرة
+    function getTradeDateKey(trade) {
+      if (trade.openedDate) return trade.openedDate;
+      if (trade.time) {
+        try {
+          return new Date(trade.time).toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+        } catch (e) {
+          return String(trade.time).slice(0, 10);
+        }
+      }
+      return new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+    }
+
+    // تحويل التاريخ YYYY-MM-DD إلى صيغة عربية واضحة (مثلاً: الثلاثاء، 27 أكتوبر 2026)
+    function formatArabicFullDate(dateKey) {
+      try {
+        const parts = String(dateKey).split('-');
+        if (parts.length === 3) {
+          const d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+          return d.toLocaleDateString('ar-EG', {
+            weekday: 'long',
+            year: 'numeric',
+            month: 'long',
+            day: 'numeric'
+          });
+        }
+      } catch (e) {}
+      return dateKey;
+    }
+
+    // حساب نقاط (Pips) لأي صفقة مغلقة أو جارية
+    function getTradeFinalPips(trade) {
+      if (typeof trade.pips === 'number' && trade.status !== 'OPEN') {
+        return trade.pips;
+      }
+      if (trade.status === 'WIN') {
+        return Math.abs(calcLivePipsFrontend(trade.symbol, trade.entry, trade.closePrice || trade.tp1, trade.direction));
+      }
+      if (trade.status === 'LOSS') {
+        return -Math.abs(calcLivePipsFrontend(trade.symbol, trade.entry, trade.closePrice || trade.sl, trade.direction));
+      }
+      if (trade.status === 'BE') {
+        return 0;
+      }
+      return 0;
+    }
+
+    // حساب إحصائيات مجموعة صفقات (لليوم المختار أو الأرشيف)
+    function computeCustomStatsForTrades(tradesList) {
+      let wins = 0, losses = 0, breakEvens = 0, openCount = 0;
+      let wonPips = 0, lostPips = 0;
+
+      tradesList.forEach(t => {
+        if (t.status === 'WIN') {
+          wins++;
+          wonPips += Math.abs(getTradeFinalPips(t));
+        } else if (t.status === 'LOSS') {
+          losses++;
+          lostPips += Math.abs(getTradeFinalPips(t));
+        } else if (t.status === 'BE') {
+          breakEvens++;
+        } else if (t.status === 'OPEN') {
+          openCount++;
+        }
+      });
+
+      wonPips = Number(wonPips.toFixed(1));
+      lostPips = Number(lostPips.toFixed(1));
+      const netPips = Number((wonPips - lostPips).toFixed(1));
+      const decided = wins + losses;
+      const winRate = decided > 0 ? Math.round((wins / decided) * 100) : 100;
+
+      return { wins, losses, breakEvens, openCount, wonPips, lostPips, netPips, winRate, total: tradesList.length };
+    }
+
+    // تجميع كل الصفقات حسب التاريخ لبناء تقويم الأيام
+    function buildCalendarDaysSummary() {
+      const allTrades = (lastLedgerStats && (lastLedgerStats.allTrades || lastLedgerStats.recentTrades)) || [];
+      const groups = {};
+      const todayKey = (lastLedgerStats && lastLedgerStats.todayDate) || new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+
+      // ضمان ظهور يوم اليوم في التقويم دائماً
+      groups[todayKey] = [];
+
+      allTrades.forEach(t => {
+        const dKey = getTradeDateKey(t);
+        if (!groups[dKey]) groups[dKey] = [];
+        groups[dKey].push(t);
+      });
+
+      const sortedDates = Object.keys(groups).sort((a, b) => b.localeCompare(a));
+      return sortedDates.map(dateKey => {
+        const dayTrades = groups[dateKey];
+        const stats = computeCustomStatsForTrades(dayTrades);
+        return {
+          dateKey,
+          arabicDate: formatArabicFullDate(dateKey),
+          isToday: dateKey === todayKey,
+          tradesCount: dayTrades.length,
+          ...stats
+        };
+      });
+    }
+
+    function openCalendarModal() {
+      const modal = document.getElementById('calendarModal');
+      const listContainer = document.getElementById('calendarDaysList');
+      if (!modal || !listContainer) return;
+
+      const daysSummary = buildCalendarDaysSummary();
+      const countEl = document.getElementById('calendarDaysCount');
+      if (countEl) countEl.innerText = daysSummary.length;
+
+      if (daysSummary.length === 0) {
+        listContainer.innerHTML = `<div class="py-8 text-center text-gray-400 font-bold">لا توجد أيام مسجلة في الأرشيف حتى الآن.</div>`;
+      } else {
+        listContainer.innerHTML = daysSummary.map(day => {
+          const isSelected = (currentLedgerFilter === 'date' && selectedCalendarDate === day.dateKey) ||
+                             (currentLedgerFilter === 'today' && day.isToday);
+          const netSign = day.netPips >= 0 ? '+' : '';
+          const netColor = day.netPips >= 0 ? 'text-emerald-400' : 'text-rose-400';
+
+          return `
+            <div onclick="selectCalendarDate('${day.dateKey}')" class="cursor-pointer p-3.5 rounded-xl border transition flex flex-wrap justify-between items-center gap-3 ${
+              isSelected ? 'bg-amber-500/15 border-amber-400' : 'bg-[#0f131d] hover:bg-[#192032] border-gray-800'
+            }">
+              <div>
+                <div class="flex items-center gap-2">
+                  <span class="font-black text-white text-sm">${day.arabicDate}</span>
+                  ${day.isToday ? `<span class="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2 py-0.5 rounded-full font-bold">اليوم</span>` : ''}
+                  <span class="text-xs text-gray-400 tabular-nums">(${day.dateKey})</span>
+                </div>
+                <div class="text-xs text-gray-300 mt-1 flex flex-wrap items-center gap-2">
+                  <span class="bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded font-bold">إجمالي الصفقات: ${day.tradesCount}</span>
+                  <span>✅ ${day.wins} هدف</span>
+                  <span>🛡️ ${day.breakEvens} تأمين</span>
+                  <span>❌ ${day.losses} ستوب</span>
+                  ${day.openCount > 0 ? `<span class="text-amber-300">⏳ ${day.openCount} جارية</span>` : ''}
+                </div>
+              </div>
+
+              <div class="text-left">
+                <div class="text-sm font-black tabular-nums ${netColor}">
+                  ${netSign}${day.netPips} Pips
+                </div>
+                <div class="text-[11px] text-gray-400 tabular-nums">
+                  مكسب: +${day.wonPips} | خسارة: -${day.lostPips}
+                </div>
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      modal.classList.remove('hidden');
+    }
+
+    function closeCalendarModal() {
+      const modal = document.getElementById('calendarModal');
+      if (modal) modal.classList.add('hidden');
+    }
+
+    function selectCalendarDate(dateKey) {
+      selectedCalendarDate = dateKey;
+      currentLedgerFilter = 'date';
+      closeCalendarModal();
+      updateFilterButtonsUI();
+      if (lastLedgerStats) renderLedgerSection(lastLedgerStats);
+    }
+
+    function updateFilterButtonsUI() {
+      const todayBtn = document.getElementById('filterTodayBtn');
+      const dateBtn = document.getElementById('filterDateBtn');
+      const allBtn = document.getElementById('filterAllBtn');
+      const banner = document.getElementById('selectedDateBanner');
+      const bannerTxt = document.getElementById('selectedDateBannerText');
+
+      const inactiveClass = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
+      todayBtn.className = inactiveClass;
+      allBtn.className = inactiveClass;
+      dateBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-amber-300 border border-amber-500/30 hover:bg-gray-700 transition";
+
+      if (currentLedgerFilter === 'today') {
+        todayBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
+        if (banner) banner.classList.add('hidden');
+      } else if (currentLedgerFilter === 'all') {
+        allBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
+        if (banner) banner.classList.add('hidden');
+      } else if (currentLedgerFilter === 'date' && selectedCalendarDate) {
+        dateBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-amber-400 text-black transition shadow";
+        if (banner && bannerTxt) {
+          banner.classList.remove('hidden');
+          bannerTxt.innerText = `📆 أنت تستعرض الآن صفقات يوم: ${formatArabicFullDate(selectedCalendarDate)} (${selectedCalendarDate})`;
+        }
+      }
     }
 
     function formatPipettePrice(priceStr, sym) {
@@ -395,7 +641,6 @@
         if (dxyEl) dxyEl.innerText = `DXY: ${ticks['DXY'].priceStr}`;
       }
 
-      // تحديث "السعر الآن" وعداد الـ Pips الحي داخل جدول الصفقات الجارية كل ثانيتين!
       if (lastLedgerStats && lastLedgerStats.recentTrades) {
         lastLedgerStats.recentTrades.forEach(t => {
           if (t.status === 'OPEN' && ticks[t.symbol]) {
@@ -426,15 +671,8 @@
 
     function setLedgerFilter(filterMode) {
       currentLedgerFilter = filterMode;
-      const todayBtn = document.getElementById('filterTodayBtn');
-      const allBtn = document.getElementById('filterAllBtn');
-      if (filterMode === 'today') {
-        todayBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
-        allBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
-      } else {
-        allBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
-        todayBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
-      }
+      if (filterMode !== 'date') selectedCalendarDate = null;
+      updateFilterButtonsUI();
       if (lastLedgerStats) renderLedgerSection(lastLedgerStats);
     }
 
@@ -651,35 +889,70 @@
       if (!st) return;
       lastLedgerStats = st;
 
-      const badge = document.getElementById('ledgerSummaryBadge');
-      if (badge) {
-        badge.innerText = `${st.winRate}% (${st.wins} هدف ✅ / ${st.breakEvens || 0} تأمين 🛡️ / ${st.losses} ستوب ❌ / ${st.openCount} جارية ⏳)`;
+      // تحديث عداد الأيام على زر التقويم
+      const daysSummary = buildCalendarDaysSummary();
+      const countEl = document.getElementById('calendarDaysCount');
+      if (countEl) countEl.innerText = daysSummary.length;
+
+      const allAvailableTrades = st.allTrades || st.recentTrades || [];
+      const todayKey = st.todayDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' });
+
+      // تحديد الصفقات المعروضة حسب الفلتر المختار ('today' | 'date' | 'all')
+      let tradesToShow = allAvailableTrades;
+      let periodTitle = 'اليوم';
+
+      if (currentLedgerFilter === 'today') {
+        tradesToShow = allAvailableTrades.filter(t => getTradeDateKey(t) === todayKey || t.status === 'OPEN');
+        periodTitle = 'اليوم';
+      } else if (currentLedgerFilter === 'date' && selectedCalendarDate) {
+        tradesToShow = allAvailableTrades.filter(t => getTradeDateKey(t) === selectedCalendarDate);
+        periodTitle = selectedCalendarDate;
+      } else {
+        tradesToShow = allAvailableTrades;
+        periodTitle = 'كل الأرشيف';
       }
 
-      if (st.todayStats) {
-        const td = st.todayStats;
-        const wonEl = document.getElementById('todayWonPips');
-        const lostEl = document.getElementById('todayLostPips');
-        const netEl = document.getElementById('todayNetPips');
-        if (wonEl) wonEl.innerText = `+${td.wonPips} Pips`;
-        if (lostEl) lostEl.innerText = `-${td.lostPips} Pips`;
-        if (netEl) {
-          const sign = td.netPips >= 0 ? '+' : '';
-          netEl.innerText = `${sign}${td.netPips} Pips`;
-          netEl.className = `text-lg font-black tabular-nums mt-0.5 ${td.netPips >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
-        }
+      // حساب إحصائيات النقاط والدقة للفترة المعروضة
+      const viewStats = (currentLedgerFilter === 'today' && st.todayStats)
+        ? {
+            wonPips: st.todayStats.wonPips,
+            lostPips: st.todayStats.lostPips,
+            netPips: st.todayStats.netPips,
+            wins: st.wins,
+            losses: st.losses,
+            breakEvens: st.breakEvens || 0,
+            openCount: st.openCount,
+            winRate: st.winRate
+          }
+        : computeCustomStatsForTrades(tradesToShow);
+
+      const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val ?? ''; };
+      setTxt('wonPipsLabel', `نقاط المكسب (${periodTitle})`);
+      setTxt('lostPipsLabel', `نقاط الخسارة (${periodTitle})`);
+      setTxt('netPipsLabel', `صافي النقاط (${periodTitle})`);
+      setTxt('summaryBadgeLabel', `ملخص الدقة (${periodTitle})`);
+
+      const wonEl = document.getElementById('todayWonPips');
+      const lostEl = document.getElementById('todayLostPips');
+      const netEl = document.getElementById('todayNetPips');
+      const badge = document.getElementById('ledgerSummaryBadge');
+
+      if (wonEl) wonEl.innerText = `+${viewStats.wonPips} Pips`;
+      if (lostEl) lostEl.innerText = `-${viewStats.lostPips} Pips`;
+      if (netEl) {
+        const sign = viewStats.netPips >= 0 ? '+' : '';
+        netEl.innerText = `${sign}${viewStats.netPips} Pips`;
+        netEl.className = `text-lg font-black tabular-nums mt-0.5 ${viewStats.netPips >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+      }
+      if (badge) {
+        badge.innerText = `${viewStats.winRate}% (${viewStats.wins} هدف ✅ / ${viewStats.breakEvens || 0} تأمين 🛡️ / ${viewStats.losses} ستوب ❌ / ${viewStats.openCount} جارية ⏳)`;
       }
 
       const tbody = document.getElementById('ledgerTableBody');
       if (!tbody) return;
 
-      let tradesToShow = st.recentTrades || [];
-      if (currentLedgerFilter === 'today' && st.todayDate) {
-        tradesToShow = tradesToShow.filter(t => !t.openedDate || t.openedDate === st.todayDate || t.status === 'OPEN');
-      }
-
       if (tradesToShow.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات في هذا التبويب حالياً (يمكنك التبديل إلى "كل الأرشيف التاريخي")</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات مسجلة في (${periodTitle}) حالياً — يمكنك فتح "📆 تقويم الأيام" أو "🗂️ كل الأرشيف التاريخي"</td></tr>`;
         return;
       }
 
@@ -690,14 +963,21 @@
         else if (t.status === 'LOSS') statusCol = 'text-rose-400 font-black';
 
         const openTime = t.openedTimeFormatted || new Date(t.time).toLocaleTimeString('ar-EG');
-        const openDateBadge = t.openedDate ? `<span class="text-[10px] text-gray-500 block">${t.openedDate}</span>` : '';
+        const dKey = getTradeDateKey(t);
+        const openDateBadge = `<span class="text-[10px] text-gray-400 block mt-0.5">📅 ${dKey}</span>`;
 
         const liveP = previousTicks[t.symbol]?.priceStr || t.currentLivePrice || t.entry;
         const livePips = calcLivePipsFrontend(t.symbol, t.entry, previousTicks[t.symbol]?.price || t.currentLivePrice || t.entry, t.direction);
         const pSign = livePips >= 0 ? '+' : '';
 
+        const closedPipsVal = getTradeFinalPips(t);
+        const closedPipsSign = closedPipsVal >= 0 ? '+' : '';
+        const closedPipsBadge = t.status !== 'OPEN'
+          ? `<div class="text-xs font-black tabular-nums mt-0.5 ${closedPipsVal >= 0 ? 'text-emerald-400' : 'text-rose-400'}">الحصيلة: ${closedPipsSign}${closedPipsVal} Pips</div>`
+          : '';
+
         const closeInfo = t.status !== 'OPEN'
-          ? `<div class="text-xs text-gray-400 mt-0.5">أغلقت: ${t.closedTimeFormatted || ''} (${t.closePrice || ''})</div>`
+          ? `<div class="text-xs text-gray-400 mt-0.5">أغلقت: ${t.closedTimeFormatted || ''} (${t.closePrice || ''})</div>${closedPipsBadge}`
           : `<div id="live-trade-price-${t.id}" class="text-xs text-amber-200 font-bold mt-0.5">السعر الآن: ${liveP}</div>
              <div id="live-trade-pips-${t.id}" class="text-xs font-black tabular-nums mt-0.5 ${livePips >= 0 ? 'text-emerald-400' : 'text-rose-400'}">الربح الجاري: ${pSign}${livePips} Pips ${livePips >= 0 ? '🟢' : '🔴'}</div>`;
 
