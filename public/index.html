@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>رادار الفوركس المؤسسي v5.0 | بث حي مباشر من TradingView</title>
+  <title>رادار الفوركس المؤسسي v5.1 | بث حي مباشر من TradingView</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -25,7 +25,7 @@
     <div class="flex items-center gap-3">
       <span class="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
       <h1 class="text-xl font-black tracking-wide text-white">
-        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.0 | مربوط لحظياً بـ TradingView Live</span>
+        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.1 | مربوط لحظياً بـ TradingView Live</span>
       </h1>
     </div>
 
@@ -41,7 +41,7 @@
 
   <main class="max-w-7xl mx-auto px-4 mt-5 space-y-5">
 
-    <!-- 1. شريط عداد الأسعار الحي من TradingView (يتغير لحظياً كل ثانيتين مثل منصات التداول) -->
+    <!-- 1. شريط عداد الأسعار الحي من TradingView -->
     <div class="card p-4 border border-emerald-500/30 bg-[#0f131d]">
       <div class="flex justify-between items-center mb-3">
         <div class="flex items-center gap-2">
@@ -51,9 +51,7 @@
         <span class="text-xs text-emerald-400 font-bold" id="liveStreamStatus">متصل بالبث اللحظي المباشر (يتحدث كل ثانيتين)...</span>
       </div>
 
-      <div class="grid grid-cols-2 md:grid-cols-5 gap-3" id="liveWatchlistBar">
-        <!-- يتم ملؤه وتحديثه لحظياً عبر Socket.io -->
-      </div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-3" id="liveWatchlistBar"></div>
     </div>
 
     <!-- 2. عداد القوة النسبية للعملات -->
@@ -129,7 +127,6 @@
               <span id="divergenceBadge" class="text-xs px-3 py-1 rounded-full font-bold bg-amber-500/20 text-amber-300">--</span>
             </div>
 
-            <!-- عداد السعر اللحظي المتغير كل ثانيتين بنفس ستايل منصات التداول -->
             <div class="flex flex-wrap items-baseline gap-4 mt-3">
               <div id="liveMainPriceBox" class="px-3 py-1 rounded-xl transition-all">
                 <span class="text-5xl font-black text-white tabular-nums tracking-tight" id="currentPrice">--</span>
@@ -162,7 +159,7 @@
         </div>
       </div>
 
-      <!-- 5. شارت TradingView الرسمي المباشر (حصرياً بدون الشارت القديم) -->
+      <!-- 5. شارت TradingView الرسمي المباشر -->
       <div class="card p-5">
         <div class="flex flex-wrap justify-between items-center mb-3 gap-3">
           <h2 class="text-lg font-black text-white flex items-center gap-2">
@@ -219,12 +216,12 @@
         </div>
       </div>
 
-      <!-- 7. لوحة نتائج الـ Backtest وسجل المراقبة الذاتية -->
+      <!-- 7. سجل المراقبة الذاتية المطور بتفاصيل الوقت والتليجرام -->
       <div class="card p-5">
         <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
           <div>
-            <h2 class="text-lg font-bold text-emerald-400">📊 سجل المراقبة الذاتية للصفقات القوية المؤكدة فقط (+85%)</h2>
-            <p class="text-xs text-gray-400">يتابع الصفقات المفتوحة لحظياً كل ثانيتين على سعر TradingView مع تأمين الدخول التلقائي (Auto Break-Even)</p>
+            <h2 class="text-lg font-bold text-emerald-400">📊 سجل الصفقات المؤكدة (+85%) الموحد مع بوت تليجرام</h2>
+            <p class="text-xs text-gray-400">يمنع تكرار نفس الصفقة، ويقيس الهدف والستوب على السعر اللحظي فقط مع توقيت الفتح والإغلاق بالثانية</p>
           </div>
           <div class="flex items-center gap-3">
             <span class="text-sm font-bold text-white" id="ledgerSummaryBadge">جاري الفحص...</span>
@@ -237,12 +234,13 @@
           <table class="w-full text-right text-sm">
             <thead class="text-xs text-gray-400 border-b border-gray-800">
               <tr>
-                <th class="pb-2">الزوج والفريم</th>
-                <th class="pb-2">الإشارة المؤكدة</th>
-                <th class="pb-2">الدخول</th>
+                <th class="pb-2">كود وتوقيت الصفقة</th>
+                <th class="pb-2">الزوج</th>
+                <th class="pb-2">الإشارة</th>
+                <th class="pb-2">سعر الدخول</th>
                 <th class="pb-2">الهدف (TP1)</th>
                 <th class="pb-2">الستوب (SL)</th>
-                <th class="pb-2">الحالة الفعلية</th>
+                <th class="pb-2">الحالة وتوقيت الإغلاق</th>
               </tr>
             </thead>
             <tbody id="ledgerTableBody" class="divide-y divide-gray-800/60"></tbody>
@@ -309,9 +307,6 @@
       '1d': 'D'
     };
 
-    /**
-     * تنسيق السعر بستايل منصات التداول الاحترافية (إبراز آخر رقم Pipette بحجم أصغر علوي)
-     */
     function formatPipettePrice(priceStr, sym) {
       if (!priceStr || priceStr === 'مغلق' || priceStr === '--') return priceStr;
       const s = String(priceStr);
@@ -323,13 +318,9 @@
       return s;
     }
 
-    /**
-     * استقبال التيكات الحية كل ثانيتين من السيرفر وتحديث العداد الرئيسي وشريط الأسعار
-     */
     socket.on('live_ticks', (ticks) => {
       renderLiveWatchlist(ticks);
 
-      // تحديث السعر الرئيسي الكبير للزوج المفتوح حالياً لحظياً
       const curTick = ticks[currentSymbol];
       if (curTick) {
         const priceEl = document.getElementById('currentPrice');
@@ -362,6 +353,10 @@
       }
 
       previousTicks = JSON.parse(JSON.stringify(ticks));
+    });
+
+    socket.on('ledger_updated', (ledgerStats) => {
+      renderLedgerSection(ledgerStats);
     });
 
     function renderLiveWatchlist(ticks) {
@@ -557,6 +552,57 @@
       document.getElementById('recommendedLot').innerText = `${Math.max(0.01, lotSize).toFixed(2)} Lot`;
     }
 
+    function renderLedgerSection(st) {
+      if (!st) return;
+      const badge = document.getElementById('ledgerSummaryBadge');
+      if (badge) {
+        badge.innerText = `الدقة: ${st.winRate}% (${st.wins} هدف ✅ / ${st.breakEvens || 0} تأمين 🛡️ / ${st.losses} ستوب ❌ / ${st.openCount} جارية ⏳)`;
+      }
+      const tbody = document.getElementById('ledgerTableBody');
+      if (!tbody) return;
+
+      if (!st.recentTrades || st.recentTrades.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات مسجلة حالياً (البوت يراقب السوق ويرسل لتليجرام فوراً عند ظهور صفقة +85%)</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = st.recentTrades.map(t => {
+        let statusCol = 'text-amber-300 font-bold';
+        if (t.status === 'WIN') statusCol = 'text-emerald-400 font-black';
+        else if (t.status === 'BE') statusCol = 'text-cyan-400 font-bold';
+        else if (t.status === 'LOSS') statusCol = 'text-rose-400 font-black';
+
+        const openTime = t.openedTimeFormatted || new Date(t.time).toLocaleTimeString('ar-EG');
+        const closeInfo = t.closedTimeFormatted
+          ? `<div class="text-xs text-gray-400 mt-0.5">أغلقت: ${t.closedTimeFormatted} (${t.closePrice || ''})</div>`
+          : `<div class="text-xs text-amber-200/70 mt-0.5">السعر الآن: ${t.currentLivePrice || t.entry}</div>`;
+        const tgBadge = t.telegramSent
+          ? `<span class="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded mr-1">📲 أُرسلت تليجرام</span>`
+          : '';
+
+        return `
+          <tr class="hover:bg-white/5 tabular-nums">
+            <td class="py-3">
+              <div class="font-black text-amber-400">${t.tradeCode || '#'}</div>
+              <div class="text-xs text-gray-400">فتحت: ${openTime}</div>
+            </td>
+            <td class="py-3 font-bold">${t.symbol} <span class="text-xs text-gray-400">(${t.timeframe})</span></td>
+            <td class="py-3">
+              <div>${t.signal} (${t.confidence}%)</div>
+              ${tgBadge}
+            </td>
+            <td class="py-3 font-bold text-blue-300">${t.entry}</td>
+            <td class="py-3 font-bold text-emerald-400">${t.tp1}</td>
+            <td class="py-3 font-bold text-rose-400">${t.sl}</td>
+            <td class="py-3 ${statusCol}">
+              <div>${t.closeReason || (t.status === 'WIN' ? '✅ حققت الهدف' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن')}</div>
+              ${closeInfo}
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
     function renderDashboard(data) {
       const setTxt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val ?? ''; };
 
@@ -582,29 +628,7 @@
       setTxt('aiFinalReviewText', data.aiFinalReview || data.summaryArabic);
 
       if (data.ledgerStats) {
-        const st = data.ledgerStats;
-        setTxt('ledgerSummaryBadge', `نسبة الدقة المسجلة: ${st.winRate}% (${st.wins} رابحة / ${st.losses} خاسرة / ${st.openCount} جارية)`);
-        const tbody = document.getElementById('ledgerTableBody');
-        if (tbody) {
-          if (!st.recentTrades || st.recentTrades.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات قوية مؤكدة مسجلة حالياً (السجل نظيف ويقبل فقط صعود قوي أو هبوط قوي +85%)</td></tr>`;
-          } else {
-            tbody.innerHTML = st.recentTrades.map(t => {
-              const statusCol = t.status === 'WIN' ? 'text-emerald-400 font-black' : t.status === 'LOSS' ? 'text-rose-400 font-black' : 'text-amber-300 font-bold';
-              const statusAr = t.status === 'WIN' ? '✅ حققت الهدف / مؤمنة' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن (مراقبة حية)';
-              return `
-                <tr class="hover:bg-white/5 tabular-nums">
-                  <td class="py-2.5 font-bold">${t.symbol} (${t.timeframe})</td>
-                  <td class="py-2.5">${t.signal} (${t.confidence}%)</td>
-                  <td class="py-2.5">${t.entry}</td>
-                  <td class="py-2.5 text-emerald-400">${t.tp1}</td>
-                  <td class="py-2.5 text-rose-400">${t.sl}</td>
-                  <td class="py-2.5 ${statusCol}">${statusAr}</td>
-                </tr>
-              `;
-            }).join('');
-          }
-        }
+        renderLedgerSection(data.ledgerStats);
       }
 
       const sig = data.signal || 'حياد';

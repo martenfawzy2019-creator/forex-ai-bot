@@ -27,6 +27,7 @@ const TV_TF_SUFFIX = {
   "15m": "|15",
   "1h": "|60",
   "1d": "",
+  "1W": "|1W",
 };
 
 /**
@@ -103,7 +104,7 @@ export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timefram
     `Recommend.All${tf}`,
     `MACD.macd${tf}`,
     `MACD.signal${tf}`,
-    "close", // السعر اللحظي بالثانية
+    "close",
     "change",
     "change_abs",
   ];
@@ -133,7 +134,11 @@ export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timefram
         ema20: Number(Number(d[5] || livePrice).toFixed(decimals)),
         ema50: Number(Number(d[6] || livePrice).toFixed(decimals)),
         ema200: Number(Number(d[7] || livePrice).toFixed(decimals)),
-        atr: Number(Number(d[8] || Math.abs((d[2] || livePrice) - (d[3] || livePrice)) || livePrice * 0.0015).toFixed(decimals)),
+        atr: Number(
+          Number(
+            d[8] || Math.abs((d[2] || livePrice) - (d[3] || livePrice)) || livePrice * 0.0015
+          ).toFixed(decimals)
+        ),
         pivotP: Number(Number(d[9] || livePrice).toFixed(decimals)),
         r1: Number(Number(d[10] || livePrice * 1.002).toFixed(decimals)),
         s1: Number(Number(d[11] || livePrice * 0.998).toFixed(decimals)),
@@ -153,10 +158,11 @@ export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timefram
  */
 export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
   const ticker = FOREX_SYMBOLS_MAP[symbol] || "EURUSD=X";
-  const range = interval === "1d" ? "6mo" : interval === "1h" ? "1mo" : "5d";
+  const yahooInterval = interval === "1W" ? "1d" : interval;
+  const range = interval === "1W" || interval === "1d" ? "6mo" : interval === "1h" ? "1mo" : "5d";
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(
     ticker
-  )}?interval=${interval}&range=${range}&includePrePost=false`;
+  )}?interval=${yahooInterval}&range=${range}&includePrePost=false`;
 
   const [response, tvSnap] = await Promise.all([
     axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" }, timeout: 7000 }),
@@ -203,7 +209,7 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     last.close = exactTvPrice;
     if (exactTvPrice > last.high) last.high = exactTvPrice;
     if (exactTvPrice < last.low) last.low = exactTvPrice;
-    last.tvSnap = tvSnap; // حفظ مؤشرات TradingView الرسمية داخل آخر شمعة
+    last.tvSnap = tvSnap;
   }
 
   return calibratedCandles;
@@ -304,24 +310,34 @@ function calcRSISeries(closes, period = 14) {
   return rsiArr;
 }
 
-function detectAlgorithmicDivergence(candles, rsiSeries) {
+/**
+ * كاشف الدايفرجنس المؤسسي الدقيق:
+ * لا يطلق تنبيه دايفرجنس إلا إذا كان هناك تشبع حقيقي وفارق زخم واضح (> 4 نقاط RSI) لمنع الإشارات الكاذبة
+ */
+function detectAlgorithmicDivergence(candles, rsiSeries, currentTvRsi) {
   const len = candles.length;
-  if (len < 30) return "لا يوجد دايفرجنس واضح";
-  const recentSlice = candles.slice(-10);
-  const olderSlice = candles.slice(-28, -10);
+  if (len < 30) return "لا يوجد دايفرجنس";
+  const recentSlice = candles.slice(-8);
+  const olderSlice = candles.slice(-26, -8);
   const recentHigh = Math.max(...recentSlice.map((c) => c.high));
   const olderHigh = Math.max(...olderSlice.map((c) => c.high));
   const recentLow = Math.min(...recentSlice.map((c) => c.low));
   const olderLow = Math.min(...olderSlice.map((c) => c.low));
-  const recentRsiMax = Math.max(...rsiSeries.slice(-10));
-  const olderRsiMax = Math.max(...rsiSeries.slice(-28, -10));
-  const recentRsiMin = Math.min(...rsiSeries.slice(-10));
-  const olderRsiMin = Math.min(...rsiSeries.slice(-28, -10));
+  const recentRsiMax = Math.max(...rsiSeries.slice(-8));
+  const olderRsiMax = Math.max(...rsiSeries.slice(-26, -8));
+  const recentRsiMin = Math.min(...rsiSeries.slice(-8));
+  const olderRsiMin = Math.min(...rsiSeries.slice(-26, -8));
 
-  if (recentHigh > olderHigh && recentRsiMax < olderRsiMax - 2)
+  const effectiveRsi = currentTvRsi || rsiSeries[len - 1];
+
+  // دايفرجنس بيعي حقيقي: قمة سعرية أعلى + قمة RSI أقل بـ 4 نقاط على الأقل + RSI في منطقة مرتفعة
+  if (recentHigh > olderHigh && recentRsiMax < olderRsiMax - 4 && olderRsiMax >= 58 && effectiveRsi >= 52) {
     return "🔴 دايفرجنس بيعي سلبي مؤكد (Bearish Divergence)";
-  if (recentLow < olderLow && recentRsiMin > olderRsiMin + 2)
+  }
+  // دايفرجنس شرائي حقيقي: قاع سعري أدنى + قاع RSI أعلى بـ 4 نقاط على الأقل + RSI في منطقة منخفضة
+  if (recentLow < olderLow && recentRsiMin > olderRsiMin + 4 && olderRsiMin <= 42 && effectiveRsi <= 48) {
     return "🟢 دايفرجنس شرائي إيجابي مؤكد (Bullish Divergence)";
+  }
   return "لا يوجد دايفرجنس";
 }
 
@@ -343,9 +359,6 @@ function calculateVolumeProfilePOC(candles, decimals = 5) {
   return Number((minP + (maxVolIdx + 0.5) * step).toFixed(decimals));
 }
 
-/**
- * حساب المؤشرات بالاعتماد المباشر على أرقام ومؤشرات TradingView الحية (tvSnap)
- */
 export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
   const closes = candles.map((c) => c.close);
@@ -379,14 +392,13 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
     return Number((trSum / period).toFixed(decimals));
   };
 
-  // استخدام أرقام TradingView الحقيقية مباشرة إن وجدت
   const exactCurrentPrice = tv?.livePrice || Number(current.close.toFixed(decimals));
   const ema20 = tv?.ema20 || calcEMA(closes, 20);
   const ema50 = tv?.ema50 || calcEMA(closes, 50);
   const ema200 = tv?.ema200 || calcEMA(closes, 200);
   const rsiSeries = calcRSISeries(closes, 14);
   const rsi14 = tv?.rsi || rsiSeries[rsiSeries.length - 1];
-  const divergenceStatus = detectAlgorithmicDivergence(candles, rsiSeries);
+  const divergenceStatus = detectAlgorithmicDivergence(candles, rsiSeries, rsi14);
   const atr14 = tv?.atr || calcATR(candles, 14);
   const pocPrice = calculateVolumeProfilePOC(candles, decimals);
 
@@ -523,32 +535,55 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   };
 }
 
+/**
+ * فحص التوافق الحقيقي مع الفريم الأكبر (True MTF Alignment):
+ * لا يعتبر الفريم الأكبر متوافقاً في الهبوط إذا كان الفريم الأكبر عليه دايفرجنس شرائي أو تشبع بيعي (والعكس في الصعود)
+ */
 export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) {
   const curTrend = currentTFTech.classical.trendByEMA;
   const highTrend = higherTFTech.classical.trendByEMA;
-  const curPrice = Number(currentTFTech.currentPrice);
-  if (
-    curTrend === "صاعد" &&
-    (highTrend === "صاعد" || curPrice > higherTFTech.classical.ema50)
-  )
+  const highDiv = higherTFTech.classical.divergenceStatus || "";
+  const highRsi = higherTFTech.classical.rsi14 || 50;
+
+  const highHasBullDiv = highDiv.includes("Bullish Divergence");
+  const highHasBearDiv = highDiv.includes("Bearish Divergence");
+
+  // فحص التوافق الصاعد
+  if (curTrend === "صاعد" && highTrend === "صاعد") {
+    if (highHasBearDiv || highRsi > 68) {
+      return {
+        isAligned: false,
+        directionBias: "MIXED",
+        mtfStatus: `⚠️ حذر: الفريم الأكبر (${higherTFName}) متشبع أو عليه دايفرجنس بيعي`,
+      };
+    }
     return {
       isAligned: true,
       directionBias: "BULLISH",
-      mtfStatus: `✅ توافق صاعد قوي مع الفريم الأكبر (${higherTFName})`,
+      mtfStatus: `✅ توافق صاعد مؤكد مع الفريم الأكبر (${higherTFName})`,
     };
-  if (
-    curTrend === "هابط" &&
-    (highTrend === "هابط" || curPrice < higherTFTech.classical.ema50)
-  )
+  }
+
+  // فحص التوافق الهابط
+  if (curTrend === "هابط" && highTrend === "هابط") {
+    if (highHasBullDiv || highRsi < 35) {
+      return {
+        isAligned: false,
+        directionBias: "MIXED",
+        mtfStatus: `⚠️ حذر: الفريم الأكبر (${higherTFName}) في منطقة ارتداد/دايفرجنس شرائي`,
+      };
+    }
     return {
       isAligned: true,
       directionBias: "BEARISH",
-      mtfStatus: `✅ توافق هابط قوي مع الفريم الأكبر (${higherTFName})`,
+      mtfStatus: `✅ توافق هابط مؤكد مع الفريم الأكبر (${higherTFName})`,
     };
+  }
+
   return {
     isAligned: false,
     directionBias: "MIXED",
-    mtfStatus: `⚠️ تضارب فريمات مع الفريم الأكبر (${higherTFName})`,
+    mtfStatus: `⚠️ تضارب/حياد مع الفريم الأكبر (${higherTFName}: ${highTrend})`,
   };
 }
 
@@ -718,7 +753,8 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 }
 
 /**
- * محرك التقييم الخوارزمي المربوط بمؤشرات TradingView المباشرة (tvRecommend + RSI + EMA + DXY)
+ * محرك التقييم الخوارزمي المترابط عبر الفريمات:
+ * يفحص الفريم الحالي + الفريم الأكبر معاً، ويمنع إصدار صفقة على فريم صغير إذا كان الفريم الأكبر في حالة حياد أو انعكاس
  */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
@@ -731,12 +767,16 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const hasBullDiv = divergenceStatus.includes("Bullish Divergence");
   const hasBearDiv = divergenceStatus.includes("Bearish Divergence");
 
+  const highDiv = higherTFTech?.classical?.divergenceStatus || "";
+  const highHasBullDiv = highDiv.includes("Bullish Divergence");
+  const highHasBearDiv = highDiv.includes("Bearish Divergence");
+
   let bullPoints = 0;
   let bearPoints = 0;
 
-  // 1. توافق الفريمات (MTF)
-  if (mtfReport.directionBias === "BULLISH") bullPoints += 2;
-  if (mtfReport.directionBias === "BEARISH") bearPoints += 2;
+  // 1. توافق الفريمات الحقيقي (شرط أساسي)
+  if (mtfReport.isAligned && mtfReport.directionBias === "BULLISH") bullPoints += 2;
+  if (mtfReport.isAligned && mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
   // 2. اتجاه المتوسطات في TradingView
   if (trendByEMA === "صاعد" && price > ema20) bullPoints += 2;
@@ -758,18 +798,37 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  // منع عكس الدايفرجنس أو الدخول في التشبع
-  if (hasBullDiv || rsi14 < 38) bearPoints = Math.max(0, bearPoints - 4);
-  if (hasBearDiv || rsi14 > 66) bullPoints = Math.max(0, bullPoints - 4);
+  // منع عكس الدايفرجنس على الفريم الحالي أو الفريم الأكبر!
+  if (hasBullDiv || highHasBullDiv || rsi14 < 38) {
+    bearPoints = Math.max(0, bearPoints - 4);
+  }
+  if (hasBearDiv || highHasBearDiv || rsi14 > 66) {
+    bullPoints = Math.max(0, bullPoints - 4);
+  }
 
   if (newsShield?.shieldActive) {
     return { allowedSignal: "حياد / انتظار", maxConfidence: 60, bullPoints, bearPoints, dxyCorr };
   }
 
-  if (bullPoints >= 6 && !hasBearDiv && rsi14 < 66 && dxyCorr.allowedBias !== "BEARISH") {
+  // لا نصدر صعود قوي أو هبوط قوي إلا إذا كان الفريم الأكبر متوافقاً فعلياً (mtfReport.isAligned === true)
+  if (
+    mtfReport.isAligned &&
+    bullPoints >= 6 &&
+    !hasBearDiv &&
+    !highHasBearDiv &&
+    rsi14 < 66 &&
+    dxyCorr.allowedBias !== "BEARISH"
+  ) {
     return { allowedSignal: "صعود قوي", maxConfidence: Math.min(95, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
   }
-  if (bearPoints >= 6 && !hasBullDiv && rsi14 > 37 && dxyCorr.allowedBias !== "BULLISH") {
+  if (
+    mtfReport.isAligned &&
+    bearPoints >= 6 &&
+    !hasBullDiv &&
+    !highHasBullDiv &&
+    rsi14 > 37 &&
+    dxyCorr.allowedBias !== "BULLISH"
+  ) {
     return { allowedSignal: "هبوط قوي", maxConfidence: Math.min(95, 78 + bearPoints * 2), bullPoints, bearPoints, dxyCorr };
   }
 
@@ -800,6 +859,7 @@ export async function generateAISignal(
 [نتيجة الفلتر الخوارزمي المباشر من TradingView]:
 - القرار المسموح به الآن: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
 - نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8.
+- حالة الفريم الأكبر (${higherTFName}): ${mtfReport.mtfStatus}.
 - حالة الدايفرجنس: ${techData.classical.divergenceStatus}.
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
 
@@ -903,7 +963,7 @@ export async function generateAISignal(
   } else {
     aiResult.signal = "حياد / انتظار";
     aiResult.confidenceScore = Math.min(68, aiResult.confidenceScore || 60);
-    aiResult.consensusCount = `تعارض فني (شراء ${preCheck.bullPoints}/8 | بيع ${preCheck.bearPoints}/8)`;
+    aiResult.consensusCount = `توافق ${Math.max(preCheck.bullPoints, preCheck.bearPoints)} من 8 معايير مؤسسية`;
   }
 
   return aiResult;

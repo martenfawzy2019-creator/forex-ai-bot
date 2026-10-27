@@ -18,7 +18,7 @@ import {
   runHistoricalBacktest,
   generateAISignal,
 } from "./quant_ai_engine.js";
-import { sendTelegramSignal, validateSignalQuality } from "./telegram_service.js";
+import { sendTelegramSignal } from "./telegram_service.js";
 
 dotenv.config();
 
@@ -37,20 +37,27 @@ let cachedNews = null;
 let lastMacroFetchTime = 0;
 let latestLiveTicks = {};
 
+// تنسيق الوقت بتوقيت القاهرة/مصر ليظهر بوضوح في الجدول والتليجرام
+function formatEgyptTime(dateObj = new Date()) {
+  return dateObj.toLocaleTimeString("ar-EG", {
+    timeZone: "Africa/Cairo",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true,
+  });
+}
+
 function loadLedger() {
   try {
     if (fs.existsSync(LEDGER_FILE)) {
       const raw = JSON.parse(fs.readFileSync(LEDGER_FILE, "utf8"));
-      const strictlyStrongTrades = raw.filter(
+      return raw.filter(
         (t) =>
           (t.signal === "صعود قوي" || t.signal === "هبوط قوي") &&
           Number(t.confidence) >= 85 &&
           !t.isWeekend
       );
-      if (strictlyStrongTrades.length !== raw.length) {
-        saveLedger(strictlyStrongTrades);
-      }
-      return strictlyStrongTrades;
     }
   } catch (e) {}
   return [];
@@ -76,8 +83,85 @@ if (startupSession.isMarketClosed) {
 }
 
 /**
- * رادار البث الحي للأسعار (Live Tick Streamer):
- * يسحب الأسعار اللحظية من TradingView كل ثانيتين ويبثها للواجهة ويحدث الصفقات المفتوحة لحظياً
+ * تحديث حالة الصفقات المفتوحة بناءً على السعر اللحظي الحقيقي فقط (بدون ذيول الشموع القديمة)
+ */
+function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
+  if (!livePriceNum || isNaN(livePriceNum)) return false;
+  const trades = loadLedger();
+  let updated = false;
+  const nowMs = Date.now();
+
+  trades.forEach((t) => {
+    if (t.status === "OPEN" && t.symbol === symbol) {
+      // لا نقيم إغلاق الصفقة في أول 15 ثانية من فتحها لمنع التذبذب اللحظي عند الفتح
+      if (nowMs - (t.openedAtMs || 0) < 15000) return;
+
+      t.currentLivePrice = livePriceNum;
+      const entry = Number(t.entry);
+      const tp1 = Number(t.tp1);
+      const sl = Number(t.sl);
+      const targetDist = Math.abs(tp1 - entry);
+
+      if (t.direction === "BUY") {
+        // تفعيل تأمين الدخول (Break-Even) فقط إذا قطع السعر 75% من المسافة نحو الهدف
+        if (!t.breakEvenSecured && livePriceNum >= entry + targetDist * 0.75) {
+          t.breakEvenSecured = true;
+          t.sl = entry; // نقل الستوب فعلياً لنقطة الدخول
+          updated = true;
+        }
+        // التحقق من ضرب الهدف الفعلي أو الستوب الفعلي
+        if (livePriceNum >= tp1) {
+          t.status = "WIN";
+          t.closeReason = "✅ حققت الهدف الكامل (TP1)";
+          t.closePrice = livePriceNum;
+          t.closedTimeFormatted = formatEgyptTime();
+          updated = true;
+        } else if (livePriceNum <= Number(t.sl)) {
+          if (t.breakEvenSecured) {
+            t.status = "BE";
+            t.closeReason = "🛡️ أُغلقت على الدخول (مؤمّنة)";
+          } else {
+            t.status = "LOSS";
+            t.closeReason = "❌ ضربت الستوب (SL)";
+          }
+          t.closePrice = livePriceNum;
+          t.closedTimeFormatted = formatEgyptTime();
+          updated = true;
+        }
+      } else if (t.direction === "SELL") {
+        if (!t.breakEvenSecured && livePriceNum <= entry - targetDist * 0.75) {
+          t.breakEvenSecured = true;
+          t.sl = entry;
+          updated = true;
+        }
+        if (livePriceNum <= tp1) {
+          t.status = "WIN";
+          t.closeReason = "✅ حققت الهدف الكامل (TP1)";
+          t.closePrice = livePriceNum;
+          t.closedTimeFormatted = formatEgyptTime();
+          updated = true;
+        } else if (livePriceNum >= Number(t.sl)) {
+          if (t.breakEvenSecured) {
+            t.status = "BE";
+            t.closeReason = "🛡️ أُغلقت على الدخول (مؤمّنة)";
+          } else {
+            t.status = "LOSS";
+            t.closeReason = "❌ ضربت الستوب (SL)";
+          }
+          t.closePrice = livePriceNum;
+          t.closedTimeFormatted = formatEgyptTime();
+          updated = true;
+        }
+      }
+    }
+  });
+
+  if (updated) saveLedger(trades);
+  return updated;
+}
+
+/**
+ * رادار البث الحي للأسعار كل ثانيتين من TradingView
  */
 setInterval(async () => {
   try {
@@ -89,124 +173,126 @@ setInterval(async () => {
       latestLiveTicks = ticks;
       io.emit("live_ticks", ticks);
 
-      // فحص الصفقات المفتوحة لحظياً مع كل تغير في السعر
-      const trades = loadLedger();
-      let updated = false;
-      trades.forEach((t) => {
-        if (t.status === "OPEN" && ticks[t.symbol]) {
-          const liveP = ticks[t.symbol].price;
-          const targetDist = Math.abs(t.tp1 - t.entry);
-          if (t.direction === "BUY") {
-            if (liveP >= t.entry + targetDist * 0.6) {
-              t.breakEvenSecured = true;
-              updated = true;
-            }
-            if (liveP >= t.tp1) {
-              t.status = "WIN";
-              updated = true;
-            } else if (liveP <= t.sl) {
-              t.status = t.breakEvenSecured ? "WIN" : "LOSS";
-              updated = true;
-            }
-          } else if (t.direction === "SELL") {
-            if (liveP <= t.entry - targetDist * 0.6) {
-              t.breakEvenSecured = true;
-              updated = true;
-            }
-            if (liveP <= t.tp1) {
-              t.status = "WIN";
-              updated = true;
-            } else if (liveP >= t.sl) {
-              t.status = t.breakEvenSecured ? "WIN" : "LOSS";
-              updated = true;
-            }
-          }
-        }
-      });
-      if (updated) saveLedger(trades);
+      let anyTradeChanged = false;
+      for (const sym of Object.keys(ticks)) {
+        const changed = evaluateOpenTradesWithLivePrice(sym, ticks[sym].price);
+        if (changed) anyTradeChanged = true;
+      }
+
+      if (anyTradeChanged) {
+        io.emit("ledger_updated", getLedgerStatsSummary());
+      }
     }
   } catch (e) {}
 }, 2000);
 
-function auditAndRecordSignal(symbol, timeframe, currentPrice, candles, aiDecision, sessionInfo) {
-  if (sessionInfo?.isMarketClosed) {
-    return {
-      totalRecorded: 0,
-      openCount: 0,
-      wins: 0,
-      losses: 0,
-      winRate: 100,
-      recentTrades: [],
-    };
-  }
-
-  const numPrice = Number(currentPrice);
+function getLedgerStatsSummary() {
   const trades = loadLedger();
-  const lastCandle = candles && candles.length > 0 ? candles[candles.length - 1] : null;
-  const recentHigh = lastCandle ? Math.max(numPrice, lastCandle.high) : numPrice;
-  const recentLow = lastCandle ? Math.min(numPrice, lastCandle.low) : numPrice;
-
-  trades.forEach((t) => {
-    if (t.symbol === symbol && t.status === "OPEN") {
-      const targetDist = Math.abs(t.tp1 - t.entry);
-      if (t.direction === "BUY") {
-        if (recentHigh >= t.entry + targetDist * 0.6) t.breakEvenSecured = true;
-        if (recentHigh >= t.tp1) t.status = "WIN";
-        else if (recentLow <= t.sl) t.status = t.breakEvenSecured ? "WIN" : "LOSS";
-      } else if (t.direction === "SELL") {
-        if (recentLow <= t.entry - targetDist * 0.6) t.breakEvenSecured = true;
-        if (recentLow <= t.tp1) t.status = "WIN";
-        else if (recentHigh >= t.sl) t.status = t.breakEvenSecured ? "WIN" : "LOSS";
-      }
-    }
-  });
-
-  const sig = (aiDecision.signal || "").trim();
-  const conf = Number(aiDecision.confidenceScore || 0);
-  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 85;
-
-  if (isConfirmedSuperStrong) {
-    const hasOpenSamePair = trades.some((t) => t.symbol === symbol && t.status === "OPEN");
-    if (!hasOpenSamePair) {
-      const isBuy = sig === "صعود قوي";
-      const slVal = extractNum(aiDecision.tradeSetup?.stopLoss);
-      const tp1Val = extractNum(aiDecision.tradeSetup?.takeProfit1);
-
-      if (slVal && tp1Val) {
-        trades.push({
-          id: Date.now(),
-          time: new Date().toISOString(),
-          symbol,
-          timeframe,
-          signal: sig,
-          direction: isBuy ? "BUY" : "SELL",
-          confidence: conf,
-          entry: currentPrice,
-          sl: slVal,
-          tp1: tp1Val,
-          breakEvenSecured: false,
-          status: "OPEN",
-        });
-      }
-    }
-  }
-
-  saveLedger(trades);
-
-  const closed = trades.filter((t) => t.status === "WIN" || t.status === "LOSS");
-  const wins = closed.filter((t) => t.status === "WIN").length;
-  const losses = closed.filter((t) => t.status === "LOSS").length;
+  const wins = trades.filter((t) => t.status === "WIN").length;
+  const losses = trades.filter((t) => t.status === "LOSS").length;
+  const breakEvens = trades.filter((t) => t.status === "BE").length;
   const openCount = trades.filter((t) => t.status === "OPEN").length;
-  const winRate = closed.length > 0 ? Math.round((wins / closed.length) * 100) : 100;
+  const decided = wins + losses;
+  const winRate = decided > 0 ? Math.round((wins / decided) * 100) : 100;
 
   return {
     totalRecorded: trades.length,
     openCount,
     wins,
     losses,
+    breakEvens,
     winRate,
-    recentTrades: trades.slice(-8).reverse(),
+    recentTrades: trades.slice(-10).reverse(),
   };
+}
+
+/**
+ * تسجيل الصفقات الجديدة (مع منع التكرار نهائياً + إرسال فوري لتليجرام عند فتح أي صفقة جديدة)
+ */
+async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessionInfo, fullResultForTelegram) {
+  if (sessionInfo?.isMarketClosed) {
+    return getLedgerStatsSummary();
+  }
+
+  const numPrice = Number(currentPrice);
+  evaluateOpenTradesWithLivePrice(symbol, numPrice);
+
+  const trades = loadLedger();
+  const sig = (aiDecision.signal || "").trim();
+  const conf = Number(aiDecision.confidenceScore || 0);
+  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 85;
+
+  if (isConfirmedSuperStrong) {
+    const isBuy = sig === "صعود قوي";
+    const direction = isBuy ? "BUY" : "SELL";
+    const nowMs = Date.now();
+
+    // 1. منع فتح صفقة إذا كانت هناك صفقة مفتوحة حالياً على نفس الزوج
+    const hasOpenSamePair = trades.some((t) => t.symbol === symbol && t.status === "OPEN");
+
+    // 2. منع تكرار نفس الصفقة (Cooldown لمدة 30 دقيقة على نفس الزوج ونفس الاتجاه حتى لو أغلقت)
+    const recentSameDirection = trades.find(
+      (t) =>
+        t.symbol === symbol &&
+        t.direction === direction &&
+        nowMs - (t.openedAtMs || 0) < 30 * 60 * 1000
+    );
+
+    if (!hasOpenSamePair && !recentSameDirection) {
+      const slVal = extractNum(aiDecision.tradeSetup?.stopLoss);
+      const tp1Val = extractNum(aiDecision.tradeSetup?.takeProfit1);
+      const tp2Val = extractNum(aiDecision.tradeSetup?.takeProfit2);
+
+      if (slVal && tp1Val) {
+        const newTrade = {
+          id: nowMs,
+          tradeCode: `#${String(nowMs).slice(-4)}`,
+          time: new Date().toISOString(),
+          openedAtMs: nowMs,
+          openedTimeFormatted: formatEgyptTime(),
+          closedTimeFormatted: null,
+          symbol,
+          timeframe,
+          signal: sig,
+          direction,
+          confidence: conf,
+          entry: numPrice,
+          currentLivePrice: numPrice,
+          closePrice: null,
+          sl: slVal,
+          initialSl: slVal,
+          tp1: tp1Val,
+          tp2: tp2Val || tp1Val,
+          breakEvenSecured: false,
+          status: "OPEN",
+          closeReason: "⏳ جارية الآن بالسوق",
+          telegramSent: false,
+        };
+
+        // إرسال الصفقة فوراً إلى بوت تليجرام في نفس اللحظة التي تُسجل فيها بالموقع!
+        try {
+          const tgPayload = {
+            ...fullResultForTelegram,
+            symbol,
+            timeframe,
+            currentPrice: numPrice,
+            ...aiDecision,
+          };
+          const tgRes = await sendTelegramSignal(tgPayload);
+          if (tgRes && tgRes.sent) {
+            newTrade.telegramSent = true;
+          }
+        } catch (tgErr) {
+          console.error("Telegram Send Error:", tgErr.message);
+        }
+
+        trades.push(newTrade);
+        saveLedger(trades);
+      }
+    }
+  }
+
+  return getLedgerStatsSummary();
 }
 
 async function getMacroAndDxyData(timeframe = "15m") {
@@ -227,11 +313,6 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
   const sessionInfo = getMarketSessionAndKillzone();
 
   if (sessionInfo.isMarketClosed) {
-    const cleanLedger = loadLedger();
-    const openCount = cleanLedger.filter((t) => t.status === "OPEN").length;
-    const wins = cleanLedger.filter((t) => t.status === "WIN").length;
-    const losses = cleanLedger.filter((t) => t.status === "LOSS").length;
-
     return {
       symbol,
       timeframe,
@@ -250,14 +331,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       sessionInfo,
       newsShield: { shieldActive: true, warningText: "🛑 السوق مغلق في عطلة نهاية الأسبوع" },
       backtestReport: { totalTrades: 0, wins: 0, losses: 0, winRate: 0, profitFactor: 0, markers: [], tradesList: [] },
-      ledgerStats: {
-        totalRecorded: cleanLedger.length,
-        openCount,
-        wins,
-        losses,
-        winRate: wins + losses > 0 ? Math.round((wins / (wins + losses)) * 100) : 100,
-        recentTrades: cleanLedger.slice(-8).reverse(),
-      },
+      ledgerStats: getLedgerStatsSummary(),
       tradeSetup: {
         entryZone: "مغلق (عطلة)",
         stopLoss: "مغلق (عطلة)",
@@ -284,17 +358,17 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
   if (!forceRefresh && analysisCache.has(cacheKey)) {
     const cachedItem = analysisCache.get(cacheKey);
     if (now - cachedItem.time < 60 * 1000) {
-      // تحديث السعر اللحظي داخل الكاش من البث الحي لـ TradingView
       if (latestLiveTicks[symbol]) {
         cachedItem.data.currentPrice = latestLiveTicks[symbol].priceStr;
         cachedItem.data.changePercent = latestLiveTicks[symbol].changePercent;
         cachedItem.data.changeAbs = latestLiveTicks[symbol].changeAbs;
       }
+      cachedItem.data.ledgerStats = getLedgerStatsSummary();
       return cachedItem.data;
     }
   }
 
-  const higherTFMap = { "5m": "1h", "15m": "1h", "1h": "1d", "1d": "1d" };
+const higherTFMap = { "5m": "15m", "15m": "1h", "1h": "1d", "1d": "1W" };
   const higherTFName = higherTFMap[timeframe] || "1h";
 
   const [pairCandles, higherCandles, macroData] = await Promise.all([
@@ -375,20 +449,25 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     aiDecision.aiFinalReview = `🛡️ [حماية رأس المال من ضرب الستوب]: تم حجب الدخول على (${symbol}) لأن شروط التوافق الصارم على TradingView لم تكتمل (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | ${preConfluence.dxyCorr.note}).`;
   }
 
-  const ledgerStats = auditAndRecordSignal(
+  const baseInfoForTelegram = {
+    symbol,
+    timeframe,
+    higherTFName,
+    currentPrice: pairTech.currentPrice,
+    dxyPrice: dxyTech.currentPrice,
+    mtfReport,
+    sessionInfo,
+    newsShield,
+  };
+
+  const ledgerStats = await auditAndRecordSignal(
     symbol,
     timeframe,
     pairTech.currentPrice,
-    pairCandles,
     aiDecision,
-    sessionInfo
-  );
-  const qualityCheck = validateSignalQuality({
-    currentPrice: pairTech.currentPrice,
     sessionInfo,
-    newsShield,
-    ...aiDecision,
-  });
+    baseInfoForTelegram
+  );
 
   const finalResult = {
     symbol,
@@ -404,7 +483,6 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     newsShield,
     backtestReport,
     ledgerStats,
-    qualityCheck,
     ...aiDecision,
     rawIndicators: pairTech,
     upcomingNews: newsList.slice(0, 5),
@@ -521,7 +599,8 @@ app.get("/api/scan-all", async (req, res) => {
   }
 });
 
-cron.schedule("*/15 * * * *", async () => {
+// فحص دوري كل 5 دقائق لجميع الأزواج لتسجيل الصفقات المؤكدة وإرسالها لتليجرام تلقائياً
+cron.schedule("*/5 * * * *", async () => {
   try {
     const session = getMarketSessionAndKillzone();
     if (session.isMarketClosed) return;
@@ -530,12 +609,6 @@ cron.schedule("*/15 * * * *", async () => {
     for (const sym of pairs) {
       const result = await runFullForexAnalysis(sym, "15m", true);
       io.emit("market_update", result);
-
-      const quality = validateSignalQuality(result);
-      if (quality.isValid && result.confidenceScore >= 85) {
-        io.emit("urgent_alert", result);
-        await sendTelegramSignal(result);
-      }
     }
   } catch (err) {}
 });
