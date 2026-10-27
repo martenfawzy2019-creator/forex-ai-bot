@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>رادار الفوركس المؤسسي v5.1 | بث حي مباشر من TradingView</title>
+  <title>رادار الفوركس المؤسسي v5.2 | سجل دائم وحساب Pips حي</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="/socket.io/socket.io.js"></script>
   <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
@@ -25,7 +25,7 @@
     <div class="flex items-center gap-3">
       <span class="w-3 h-3 rounded-full bg-emerald-400 animate-ping"></span>
       <h1 class="text-xl font-black tracking-wide text-white">
-        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.1 | مربوط لحظياً بـ TradingView Live</span>
+        رادار الفوركس المؤسسي <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-2.5 py-0.5 rounded text-xs font-bold">v5.2 | حساب Pips وسجل دائم</span>
       </h1>
     </div>
 
@@ -216,20 +216,50 @@
         </div>
       </div>
 
-      <!-- 7. سجل المراقبة الذاتية المطور بتفاصيل الوقت والتليجرام -->
-      <div class="card p-5">
-        <div class="flex flex-wrap justify-between items-center mb-4 gap-3">
+      <!-- 7. سجل الصفقات الدائم وحصاد النقاط (Pips) اليومي -->
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap justify-between items-center gap-3">
           <div>
-            <h2 class="text-lg font-bold text-emerald-400">📊 سجل الصفقات المؤكدة (+85%) الموحد مع بوت تليجرام</h2>
-            <p class="text-xs text-gray-400">يمنع تكرار نفس الصفقة، ويقيس الهدف والستوب على السعر اللحظي فقط مع توقيت الفتح والإغلاق بالثانية</p>
+            <h2 class="text-lg font-bold text-emerald-400">📊 سجل الصفقات الدائم وحصاد النقاط (Pips) الموحد مع تليجرام</h2>
+            <p class="text-xs text-gray-400">محفوظ بشكل دائم خارج Git + تحديث حي للسعر والـ Pips كل ثانيتين + إشعارات تأمين وتقرير يومي على تليجرام</p>
           </div>
-          <div class="flex items-center gap-3">
-            <span class="text-sm font-bold text-white" id="ledgerSummaryBadge">جاري الفحص...</span>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="setLedgerFilter('today')" id="filterTodayBtn" class="px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition">
+              📅 صفقات اليوم
+            </button>
+            <button onclick="setLedgerFilter('all')" id="filterAllBtn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition">
+              🗂️ كل الأرشيف التاريخي
+            </button>
+            <button onclick="sendDailyReportNow()" id="sendReportBtn" class="bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 border border-blue-500/40 px-3 py-1.5 rounded-lg text-xs font-bold transition">
+              📲 إرسال تقرير اليوم لتليجرام
+            </button>
             <button onclick="clearTradesLedger()" class="bg-rose-600/20 hover:bg-rose-600/40 text-rose-400 border border-rose-500/40 px-3 py-1.5 rounded-lg text-xs font-bold transition">
               🗑️ تصفير السجل
             </button>
           </div>
         </div>
+
+        <!-- بطاقات حصاد نقاط اليوم (Daily Pips Summary) -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+          <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
+            <div class="text-xs text-gray-400">نقاط المكسب اليوم</div>
+            <div class="text-lg font-black text-emerald-400 tabular-nums mt-0.5" id="todayWonPips">+0.0 Pips</div>
+          </div>
+          <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
+            <div class="text-xs text-gray-400">نقاط الخسارة اليوم</div>
+            <div class="text-lg font-black text-rose-400 tabular-nums mt-0.5" id="todayLostPips">-0.0 Pips</div>
+          </div>
+          <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
+            <div class="text-xs text-gray-400">صافي نقاط اليوم (Net Pips)</div>
+            <div class="text-lg font-black text-amber-400 tabular-nums mt-0.5" id="todayNetPips">0.0 Pips</div>
+          </div>
+          <div class="bg-[#0f131d] p-3 rounded-xl border border-gray-800">
+            <div class="text-xs text-gray-400">ملخص الدقة</div>
+            <div class="text-xs font-black text-white mt-1.5" id="ledgerSummaryBadge">جاري الفحص...</div>
+          </div>
+        </div>
+
         <div class="overflow-x-auto">
           <table class="w-full text-right text-sm">
             <thead class="text-xs text-gray-400 border-b border-gray-800">
@@ -240,7 +270,7 @@
                 <th class="pb-2">سعر الدخول</th>
                 <th class="pb-2">الهدف (TP1)</th>
                 <th class="pb-2">الستوب (SL)</th>
-                <th class="pb-2">الحالة وتوقيت الإغلاق</th>
+                <th class="pb-2">الحالة والـ Pips والسعر الحي</th>
               </tr>
             </thead>
             <tbody id="ledgerTableBody" class="divide-y divide-gray-800/60"></tbody>
@@ -290,6 +320,8 @@
     let currentSymbol = 'XAUUSD';
     let currentTimeframe = '15m';
     let lastAnalysisData = null;
+    let lastLedgerStats = null;
+    let currentLedgerFilter = 'today'; // 'today' أو 'all'
     let previousTicks = {};
     const socket = io();
 
@@ -306,6 +338,17 @@
       '1h': '60',
       '1d': 'D'
     };
+
+    function calcLivePipsFrontend(symbol, entryPrice, livePrice, direction) {
+      const entry = Number(entryPrice);
+      const current = Number(livePrice);
+      if (!entry || !current || isNaN(entry) || isNaN(current)) return 0;
+      const diff = direction === 'BUY' ? current - entry : entry - current;
+      let mult = 10000;
+      if (symbol === 'XAUUSD') mult = 10;
+      else if (symbol === 'USDJPY') mult = 100;
+      return Number((diff * mult).toFixed(1));
+    }
 
     function formatPipettePrice(priceStr, sym) {
       if (!priceStr || priceStr === 'مغلق' || priceStr === '--') return priceStr;
@@ -352,12 +395,64 @@
         if (dxyEl) dxyEl.innerText = `DXY: ${ticks['DXY'].priceStr}`;
       }
 
+      // تحديث "السعر الآن" وعداد الـ Pips الحي داخل جدول الصفقات الجارية كل ثانيتين!
+      if (lastLedgerStats && lastLedgerStats.recentTrades) {
+        lastLedgerStats.recentTrades.forEach(t => {
+          if (t.status === 'OPEN' && ticks[t.symbol]) {
+            const liveP = ticks[t.symbol].priceStr;
+            const livePips = calcLivePipsFrontend(t.symbol, t.entry, ticks[t.symbol].price, t.direction);
+            t.currentLivePrice = liveP;
+            t.livePips = livePips;
+
+            const rowPriceEl = document.getElementById(`live-trade-price-${t.id}`);
+            const rowPipsEl = document.getElementById(`live-trade-pips-${t.id}`);
+            if (rowPriceEl) rowPriceEl.innerText = `السعر الآن: ${liveP}`;
+            if (rowPipsEl) {
+              const pSign = livePips >= 0 ? '+' : '';
+              rowPipsEl.className = `text-xs font-black tabular-nums mt-0.5 ${livePips >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+              rowPipsEl.innerText = `الربح الجاري: ${pSign}${livePips} Pips ${livePips >= 0 ? '🟢' : '🔴'}`;
+            }
+          }
+        });
+      }
+
       previousTicks = JSON.parse(JSON.stringify(ticks));
     });
 
     socket.on('ledger_updated', (ledgerStats) => {
+      lastLedgerStats = ledgerStats;
       renderLedgerSection(ledgerStats);
     });
+
+    function setLedgerFilter(filterMode) {
+      currentLedgerFilter = filterMode;
+      const todayBtn = document.getElementById('filterTodayBtn');
+      const allBtn = document.getElementById('filterAllBtn');
+      if (filterMode === 'today') {
+        todayBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
+        allBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
+      } else {
+        allBtn.className = "px-3 py-1.5 rounded-lg text-xs font-black bg-emerald-500 text-black transition";
+        todayBtn.className = "px-3 py-1.5 rounded-lg text-xs font-bold bg-[#1e2436] text-gray-300 hover:bg-gray-700 transition";
+      }
+      if (lastLedgerStats) renderLedgerSection(lastLedgerStats);
+    }
+
+    async function sendDailyReportNow() {
+      const btn = document.getElementById('sendReportBtn');
+      btn.disabled = true;
+      btn.innerText = "جاري الإرسال...";
+      try {
+        const res = await fetch('/api/send-daily-report', { method: 'POST' });
+        const data = await res.json();
+        alert(data.message || "تم الإرسال!");
+      } catch (e) {
+        alert("خطأ في الإرسال");
+      } finally {
+        btn.disabled = false;
+        btn.innerText = "📲 إرسال تقرير اليوم لتليجرام";
+      }
+    }
 
     function renderLiveWatchlist(ticks) {
       const bar = document.getElementById('liveWatchlistBar');
@@ -554,48 +649,84 @@
 
     function renderLedgerSection(st) {
       if (!st) return;
+      lastLedgerStats = st;
+
       const badge = document.getElementById('ledgerSummaryBadge');
       if (badge) {
-        badge.innerText = `الدقة: ${st.winRate}% (${st.wins} هدف ✅ / ${st.breakEvens || 0} تأمين 🛡️ / ${st.losses} ستوب ❌ / ${st.openCount} جارية ⏳)`;
+        badge.innerText = `${st.winRate}% (${st.wins} هدف ✅ / ${st.breakEvens || 0} تأمين 🛡️ / ${st.losses} ستوب ❌ / ${st.openCount} جارية ⏳)`;
       }
+
+      if (st.todayStats) {
+        const td = st.todayStats;
+        const wonEl = document.getElementById('todayWonPips');
+        const lostEl = document.getElementById('todayLostPips');
+        const netEl = document.getElementById('todayNetPips');
+        if (wonEl) wonEl.innerText = `+${td.wonPips} Pips`;
+        if (lostEl) lostEl.innerText = `-${td.lostPips} Pips`;
+        if (netEl) {
+          const sign = td.netPips >= 0 ? '+' : '';
+          netEl.innerText = `${sign}${td.netPips} Pips`;
+          netEl.className = `text-lg font-black tabular-nums mt-0.5 ${td.netPips >= 0 ? 'text-emerald-400' : 'text-rose-400'}`;
+        }
+      }
+
       const tbody = document.getElementById('ledgerTableBody');
       if (!tbody) return;
 
-      if (!st.recentTrades || st.recentTrades.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات مسجلة حالياً (البوت يراقب السوق ويرسل لتليجرام فوراً عند ظهور صفقة +85%)</td></tr>`;
+      let tradesToShow = st.recentTrades || [];
+      if (currentLedgerFilter === 'today' && st.todayDate) {
+        tradesToShow = tradesToShow.filter(t => !t.openedDate || t.openedDate === st.todayDate || t.status === 'OPEN');
+      }
+
+      if (tradesToShow.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="7" class="py-6 text-center text-gray-400 font-bold">لا توجد صفقات في هذا التبويب حالياً (يمكنك التبديل إلى "كل الأرشيف التاريخي")</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = st.recentTrades.map(t => {
+      tbody.innerHTML = tradesToShow.map(t => {
         let statusCol = 'text-amber-300 font-bold';
         if (t.status === 'WIN') statusCol = 'text-emerald-400 font-black';
         else if (t.status === 'BE') statusCol = 'text-cyan-400 font-bold';
         else if (t.status === 'LOSS') statusCol = 'text-rose-400 font-black';
 
         const openTime = t.openedTimeFormatted || new Date(t.time).toLocaleTimeString('ar-EG');
-        const closeInfo = t.closedTimeFormatted
-          ? `<div class="text-xs text-gray-400 mt-0.5">أغلقت: ${t.closedTimeFormatted} (${t.closePrice || ''})</div>`
-          : `<div class="text-xs text-amber-200/70 mt-0.5">السعر الآن: ${t.currentLivePrice || t.entry}</div>`;
+        const openDateBadge = t.openedDate ? `<span class="text-[10px] text-gray-500 block">${t.openedDate}</span>` : '';
+
+        const liveP = previousTicks[t.symbol]?.priceStr || t.currentLivePrice || t.entry;
+        const livePips = calcLivePipsFrontend(t.symbol, t.entry, previousTicks[t.symbol]?.price || t.currentLivePrice || t.entry, t.direction);
+        const pSign = livePips >= 0 ? '+' : '';
+
+        const closeInfo = t.status !== 'OPEN'
+          ? `<div class="text-xs text-gray-400 mt-0.5">أغلقت: ${t.closedTimeFormatted || ''} (${t.closePrice || ''})</div>`
+          : `<div id="live-trade-price-${t.id}" class="text-xs text-amber-200 font-bold mt-0.5">السعر الآن: ${liveP}</div>
+             <div id="live-trade-pips-${t.id}" class="text-xs font-black tabular-nums mt-0.5 ${livePips >= 0 ? 'text-emerald-400' : 'text-rose-400'}">الربح الجاري: ${pSign}${livePips} Pips ${livePips >= 0 ? '🟢' : '🔴'}</div>`;
+
         const tgBadge = t.telegramSent
           ? `<span class="text-[10px] bg-blue-500/20 text-blue-300 px-1.5 py-0.5 rounded mr-1">📲 أُرسلت تليجرام</span>`
+          : '';
+
+        const beBadge = t.breakEvenSecured && t.status === 'OPEN'
+          ? `<span class="text-[10px] bg-cyan-500/20 text-cyan-300 px-1.5 py-0.5 rounded block mt-1">🛡️ مؤمّنة على الدخول</span>`
           : '';
 
         return `
           <tr class="hover:bg-white/5 tabular-nums">
             <td class="py-3">
               <div class="font-black text-amber-400">${t.tradeCode || '#'}</div>
-              <div class="text-xs text-gray-400">فتحت: ${openTime}</div>
+              <div class="text-xs text-gray-300">فتحت: ${openTime}</div>
+              ${openDateBadge}
             </td>
             <td class="py-3 font-bold">${t.symbol} <span class="text-xs text-gray-400">(${t.timeframe})</span></td>
             <td class="py-3">
               <div>${t.signal} (${t.confidence}%)</div>
               ${tgBadge}
+              ${beBadge}
             </td>
             <td class="py-3 font-bold text-blue-300">${t.entry}</td>
             <td class="py-3 font-bold text-emerald-400">${t.tp1}</td>
             <td class="py-3 font-bold text-rose-400">${t.sl}</td>
             <td class="py-3 ${statusCol}">
-              <div>${t.closeReason || (t.status === 'WIN' ? '✅ حققت الهدف' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن')}</div>
+              <div>${t.closeReason || (t.status === 'WIN' ? '✅ حققت الهدف' : t.status === 'LOSS' ? '❌ ضربت ستوب' : '⏳ جارية الآن بالسوق')}</div>
               ${closeInfo}
             </td>
           </tr>
@@ -655,6 +786,7 @@
     }
 
     async function clearTradesLedger() {
+      if (!confirm("هل أنت متأكد من مسح السجل بالكامل؟")) return;
       await fetch('/api/clear-ledger', { method: 'POST' });
       fetchAnalysis(true);
     }
