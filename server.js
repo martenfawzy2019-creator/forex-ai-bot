@@ -65,6 +65,19 @@ function getSymbolDecimals(symbol) {
 }
 
 /**
+ * تحديد اتجاه الرهان على الدولار الأمريكي (USD Bias) لكل صفقة لمنع فتح صفقات متضاربة في نفس الوقت
+ */
+function getTradeUsdBias(symbol, direction) {
+  if (["XAUUSD", "EURUSD", "GBPUSD"].includes(symbol)) {
+    return direction === "BUY" ? "USD_WEAK" : "USD_STRONG";
+  }
+  if (symbol === "USDJPY") {
+    return direction === "BUY" ? "USD_STRONG" : "USD_WEAK";
+  }
+  return "NEUTRAL";
+}
+
+/**
  * حساب عدد النقاط (Pips) القياسي لكل زوج عملات أو ذهب بدقة
  */
 function calculatePips(symbol, entryPrice, targetOrCurrentPrice, direction) {
@@ -81,7 +94,7 @@ function calculatePips(symbol, entryPrice, targetOrCurrentPrice, direction) {
 }
 
 /**
- * إرسال رسائل تليجرام فورية (للتأمين ثلاثي المراحل، الإغلاق بالـ Pips، والتقرير اليومي)
+ * إرسال رسائل تليجرام فورية (للتأمين، حجز الأرباح، الإغلاق بالـ Pips، والتقرير اليومي)
  */
 async function sendCustomTelegramMessage(htmlText) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -142,10 +155,10 @@ function extractNum(str) {
 loadLedger();
 
 /**
- * نظام إدارة الصفقات المؤسسي ثلاثي المراحل (3-Stage Smart Profit Lock & Zero-Loss Engine):
- * - المرحلة 1 (30% من الهدف): تقليص الستوب لوز للنصف (50% Risk Cut)
- * - المرحلة 2 (45% من الهدف): تأمين الصفقة على الدخول + ربح 12% من الهدف (0 خسارة!)
- * - المرحلة 3 (75% من الهدف): حجز 50% من أرباح الهدف رسمياً (Profit Lock)
+ * إدارة الصفقات المفتوحة (بدون تضييق الستوب المبكر الذي يخنق الصفقة):
+ * - يترك الستوب الهيكلي الأصلي يتنفس بحرية.
+ * - عند 55% من الهدف: يؤمّن الصفقة على الدخول + ربح 10% من الهدف (Break-Even).
+ * - عند 80% من الهدف: يحجز 50% من ربح الهدف رسمياً (Profit Lock).
  */
 async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
   if (!livePriceNum || isNaN(livePriceNum)) return false;
@@ -164,17 +177,15 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
 
       const entry = Number(t.entry);
       const tp1 = Number(t.tp1);
-      const initialSl = Number(t.initialSl || t.sl);
       const targetDist = Math.abs(tp1 - entry);
-      const initialRisk = Math.abs(entry - initialSl);
       if (targetDist <= 0) continue;
 
       if (t.direction === "BUY") {
         t.maxReachedPrice = Math.max(Number(t.maxReachedPrice || entry), livePriceNum);
         const maxProgress = (t.maxReachedPrice - entry) / targetDist;
 
-        // المرحلة 3: السعر قطع 75% من الهدف -> حجز 50% من أرباح الهدف رسمياً!
-        if (maxProgress >= 0.75 && (t.lockStage || 0) < 3) {
+        // المرحلة 2 (عند 80% من الهدف): حجز 50% من أرباح الهدف رسمياً
+        if (maxProgress >= 0.80 && (t.lockStage || 0) < 3) {
           t.sl = Number((entry + targetDist * 0.50).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 3;
@@ -183,16 +194,16 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           updated = true;
 
           await sendCustomTelegramMessage(
-            `🔒 <b>حجز أرباح تلقائي (المرحلة 3 - Profit Lock)</b>\n` +
+            `🔒 <b>حجز 50% من الأرباح تلقائياً (Profit Lock)</b>\n` +
               `━━━━━━━━━━━━━━\n` +
               `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
               `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
-              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>حجز ربح مضمون +${lockedPips} Pips 🟢</b>)`
+              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
           );
         }
-        // المرحلة 2: السعر قطع 45% من الهدف -> تأمين الدخول + ربح بسيط (0 خسارة!)
-        else if (maxProgress >= 0.45 && (t.lockStage || 0) < 2) {
-          t.sl = Number((entry + targetDist * 0.12).toFixed(decimals));
+        // المرحلة 1 (عند 55% من الهدف): تأمين الصفقة على الدخول + ربح رمزي
+        else if (maxProgress >= 0.55 && (t.lockStage || 0) < 2) {
+          t.sl = Number((entry + targetDist * 0.10).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 2;
           const securedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "BUY"));
@@ -200,20 +211,13 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           updated = true;
 
           await sendCustomTelegramMessage(
-            `🛡️ <b>تأمين صفقة مبكر (Break-Even + ربح)</b>\n` +
+            `🛡️ <b>تأمين صفقة تلقائي (Break-Even)</b>\n` +
               `━━━━━━━━━━━━━━\n` +
               `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b> (${t.timeframe})\n` +
               `📈 الاتجاه: <b>${t.signal}</b>\n` +
               `🎯 سعر الدخول: <code>${t.entry}</code> | السعر الآن: <code>${livePriceNum}</code> (<b>+${t.livePips} Pips</b>)\n` +
               `🔒 <b>تم نقل الستوب إلى <code>${t.sl}</code> (+${securedPips} Pips) — الصفقة الآن صفر خسارة!</b>`
           );
-        }
-        // المرحلة 1: السعر قطع 30% من الهدف -> تقليص الستوب لوز للنصف!
-        else if (maxProgress >= 0.30 && (t.lockStage || 0) < 1) {
-          t.sl = Number((entry - initialRisk * 0.50).toFixed(decimals));
-          t.lockStage = 1;
-          t.closeReason = "⏳ جارية (تم تقليص المخاطرة 50%)";
-          updated = true;
         }
 
         // التحقق من ضرب الهدف الكامل أو الارتداد لمستوى الستوب/الربح المحجوز
@@ -226,6 +230,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           t.closePrice = livePriceNum;
           t.closedTimeFormatted = formatEgyptTime();
           t.closedDate = getEgyptDateString();
+          t.closedAtMs = nowMs;
           updated = true;
 
           await sendCustomTelegramMessage(
@@ -246,6 +251,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             t.closePrice = Number(t.sl);
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
@@ -257,13 +263,14 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             );
           } else if ((t.lockStage || 0) === 2 || t.breakEvenSecured) {
             const bePips = Math.max(0, calculatePips(t.symbol, entry, t.sl, "BUY"));
-            t.status = bePips >= 1.5 ? "WIN" : "BE";
+            t.status = "BE";
             t.pipsResult = bePips;
             t.pips = bePips;
             t.closeReason = `🛡️ أُغلقت مؤمّنة (+${bePips} Pips)`;
             t.closePrice = Number(t.sl);
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
@@ -278,17 +285,15 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             t.status = "LOSS";
             t.pipsResult = -lostPips;
             t.pips = -lostPips;
-            t.closeReason =
-              t.lockStage === 1
-                ? `❌ ستوب مخفّض 50% (-${lostPips} Pips)`
-                : `❌ ضربت ستوب (-${lostPips} Pips)`;
+            t.closeReason = `❌ ضربت ستوب (-${lostPips} Pips)`;
             t.closePrice = livePriceNum;
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
-              `❌ <b>إغلاق صفقة على وقف الخسارة (${t.lockStage === 1 ? "مخاطرة مخفضة للنصف" : "Stop Loss"})</b>\n` +
+              `❌ <b>إغلاق صفقة على وقف الخسارة (Stop Loss)</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق: <code>${livePriceNum}</code>\n` +
@@ -302,8 +307,8 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
         t.minReachedPrice = Math.min(Number(t.minReachedPrice || entry), livePriceNum);
         const maxProgress = (entry - t.minReachedPrice) / targetDist;
 
-        // المرحلة 3: قطع 75% من الهدف -> حجز 50% من أرباح الهدف
-        if (maxProgress >= 0.75 && (t.lockStage || 0) < 3) {
+        // المرحلة 2 (عند 80% من الهدف): حجز 50% من أرباح الهدف
+        if (maxProgress >= 0.80 && (t.lockStage || 0) < 3) {
           t.sl = Number((entry - targetDist * 0.50).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 3;
@@ -312,16 +317,16 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           updated = true;
 
           await sendCustomTelegramMessage(
-            `🔒 <b>حجز أرباح تلقائي (المرحلة 3 - Profit Lock)</b>\n` +
+            `🔒 <b>حجز 50% من الأرباح تلقائياً (Profit Lock)</b>\n` +
               `━━━━━━━━━━━━━━\n` +
               `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
               `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
-              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>حجز ربح مضمون +${lockedPips} Pips 🟢</b>)`
+              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
           );
         }
-        // المرحلة 2: قطع 45% من الهدف -> تأمين الدخول + ربح بسيط (0 خسارة!)
-        else if (maxProgress >= 0.45 && (t.lockStage || 0) < 2) {
-          t.sl = Number((entry - targetDist * 0.12).toFixed(decimals));
+        // المرحلة 1 (عند 55% من الهدف): تأمين الصفقة على الدخول + ربح رمزي
+        else if (maxProgress >= 0.55 && (t.lockStage || 0) < 2) {
+          t.sl = Number((entry - targetDist * 0.10).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 2;
           const securedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "SELL"));
@@ -329,20 +334,13 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           updated = true;
 
           await sendCustomTelegramMessage(
-            `🛡️ <b>تأمين صفقة مبكر (Break-Even + ربح)</b>\n` +
+            `🛡️ <b>تأمين صفقة تلقائي (Break-Even)</b>\n` +
               `━━━━━━━━━━━━━━\n` +
               `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b> (${t.timeframe})\n` +
               `📉 الاتجاه: <b>${t.signal}</b>\n` +
               `🎯 سعر الدخول: <code>${t.entry}</code> | السعر الآن: <code>${livePriceNum}</code> (<b>+${t.livePips} Pips</b>)\n` +
               `🔒 <b>تم نقل الستوب إلى <code>${t.sl}</code> (+${securedPips} Pips) — الصفقة الآن صفر خسارة!</b>`
           );
-        }
-        // المرحلة 1: قطع 30% من الهدف -> تقليص الستوب لوز للنصف
-        else if (maxProgress >= 0.30 && (t.lockStage || 0) < 1) {
-          t.sl = Number((entry + initialRisk * 0.50).toFixed(decimals));
-          t.lockStage = 1;
-          t.closeReason = "⏳ جارية (تم تقليص المخاطرة 50%)";
-          updated = true;
         }
 
         if (livePriceNum <= tp1) {
@@ -354,6 +352,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           t.closePrice = livePriceNum;
           t.closedTimeFormatted = formatEgyptTime();
           t.closedDate = getEgyptDateString();
+          t.closedAtMs = nowMs;
           updated = true;
 
           await sendCustomTelegramMessage(
@@ -374,6 +373,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             t.closePrice = Number(t.sl);
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
@@ -385,13 +385,14 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             );
           } else if ((t.lockStage || 0) === 2 || t.breakEvenSecured) {
             const bePips = Math.max(0, calculatePips(t.symbol, entry, t.sl, "SELL"));
-            t.status = bePips >= 1.5 ? "WIN" : "BE";
+            t.status = "BE";
             t.pipsResult = bePips;
             t.pips = bePips;
             t.closeReason = `🛡️ أُغلقت مؤمّنة (+${bePips} Pips)`;
             t.closePrice = Number(t.sl);
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
@@ -406,17 +407,15 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             t.status = "LOSS";
             t.pipsResult = -lostPips;
             t.pips = -lostPips;
-            t.closeReason =
-              t.lockStage === 1
-                ? `❌ ستوب مخفّض 50% (-${lostPips} Pips)`
-                : `❌ ضربت ستوب (-${lostPips} Pips)`;
+            t.closeReason = `❌ ضربت ستوب (-${lostPips} Pips)`;
             t.closePrice = livePriceNum;
             t.closedTimeFormatted = formatEgyptTime();
             t.closedDate = getEgyptDateString();
+            t.closedAtMs = nowMs;
             updated = true;
 
             await sendCustomTelegramMessage(
-              `❌ <b>إغلاق صفقة على وقف الخسارة (${t.lockStage === 1 ? "مخاطرة مخفضة للنصف" : "Stop Loss"})</b>\n` +
+              `❌ <b>إغلاق صفقة على وقف الخسارة (Stop Loss)</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق: <code>${livePriceNum}</code>\n` +
@@ -546,6 +545,11 @@ setInterval(async () => {
   } catch (e) {}
 }, 2000);
 
+/**
+ * تسجيل الصفقات مع:
+ * 1. منع التضارب العكسي على الدولار (Global USD Exposure Lock)
+ * 2. حظر الزوج لمدة 3 ساعات إذا ضرب ستوب لوز (Anti-Revenge Cooldown)
+ */
 async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessionInfo, fullResultForTelegram) {
   if (sessionInfo?.isMarketClosed) {
     return getLedgerStatsSummary();
@@ -568,16 +572,30 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
     const isBuy = sig === "صعود قوي";
     const direction = isBuy ? "BUY" : "SELL";
     const nowMs = Date.now();
+    const newUsdBias = getTradeUsdBias(symbol, direction);
 
+    // 1. منع فتح صفقة إذا كانت هناك صفقة مفتوحة على نفس الزوج
     const hasOpenSamePair = trades.some((t) => t.symbol === symbol && t.status === "OPEN");
-    const recentSameDirection = trades.find(
-      (t) =>
-        t.symbol === symbol &&
-        t.direction === direction &&
-        nowMs - (t.openedAtMs || 0) < 30 * 60 * 1000
-    );
 
-    if (!hasOpenSamePair && !recentSameDirection) {
+    // 2. منع فتح صفقة تضارب اتجاه الدولار لصفقة أخرى مفتوحة حالياً (مثلاً منع بيع EURUSD بينما XAUUSD مفتوح شراء!)
+    const hasConflictingUsdTrade = trades.some((t) => {
+      if (t.status !== "OPEN") return false;
+      const existingBias = getTradeUsdBias(t.symbol, t.direction);
+      return (
+        (newUsdBias === "USD_WEAK" && existingBias === "USD_STRONG") ||
+        (newUsdBias === "USD_STRONG" && existingBias === "USD_WEAK")
+      );
+    });
+
+    // 3. فترة تهدئة ذكية: 60 دقيقة بعد الصفقة الرابحة، و 3 ساعات كاملة (180 دقيقة) بعد ضرب الستوب لمنع تكرار الخسارة!
+    const recentSameDirection = trades.find((t) => {
+      if (t.symbol !== symbol || t.direction !== direction) return false;
+      const refTime = t.closedAtMs || t.openedAtMs || 0;
+      const cooldownMs = t.status === "LOSS" ? 180 * 60 * 1000 : 60 * 60 * 1000;
+      return nowMs - refTime < cooldownMs;
+    });
+
+    if (!hasOpenSamePair && !hasConflictingUsdTrade && !recentSameDirection) {
       const slVal = extractNum(aiDecision.tradeSetup?.stopLoss);
       const tp1Val = extractNum(aiDecision.tradeSetup?.takeProfit1);
       const tp2Val = extractNum(aiDecision.tradeSetup?.takeProfit2);
@@ -593,6 +611,7 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
           openedTimeFormatted: formatEgyptTime(),
           closedTimeFormatted: null,
           closedDate: null,
+          closedAtMs: null,
           symbol,
           timeframe,
           signal: sig,
@@ -757,7 +776,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     aiDecision = {
       signal: preConfluence.allowedSignal,
       confidenceScore: preConfluence.maxConfidence,
-      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 (المطلوب ${sessionInfo.requiredScore || 6})`,
+      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 (المطلوب ${sessionInfo.requiredScore || 7})`,
       macroNewsIntegration: `${preConfluence.dxyCorr.note} | مؤشر الدولار DXY عند ${dxyTech.currentPrice} بينما السعر ${pairTech.volumeAnalysis.pocRelation}.`,
       isUrgentAlert: preConfluence.allowedSignal !== "حياد / انتظار",
       schoolsBreakdown: {
@@ -772,7 +791,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       aiFinalReview:
         preConfluence.allowedSignal === "حياد / انتظار"
           ? preConfluence.sessionBlockReason || "لا توجد صفقة مؤكدة حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز بسبب عدم اكتمال التوافق المؤسسي)."
-          : `إشارة مؤسسية مؤكدة (${preConfluence.allowedSignal}) مع نظام التأمين وحجز الأرباح ثلاثي المراحل.`,
+          : `إشارة مؤسسية مؤكدة (${preConfluence.allowedSignal}) مع نظام التأمين وحجز الأرباح الذكي.`,
       tradeSetup: {
         entryZone: `${setup.entry}`,
         stopLoss: `${setup.sl}`,
@@ -797,7 +816,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     };
     aiDecision.aiFinalReview = sessionInfo.isDeadZone
       ? `⏸️ [الفلتر الذهبي للجلسات]: تم إيقاف فتح الصفقات الجديدة في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone) لحماية رأس مالك من الحركات الكاذبة.`
-      : `🛡️ [حماية رأس المال من ضرب الستوب]: تم حجب الدخول على (${symbol}) لأن شروط التوافق الصارم لم تكتمل (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | المطلوب في هذه الجلسة: ${sessionInfo.requiredScore || 6}/8).`;
+      : preConfluence.sessionBlockReason || `🛡️ [حماية رأس المال من ضرب الستوب]: تم حجب الدخول على (${symbol}) لأن شروط التوافق الصارم لم تكتمل (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | المطلوب: ${sessionInfo.requiredScore || 7}/8).`;
   }
 
   const baseInfoForTelegram = {
@@ -982,5 +1001,5 @@ cron.schedule(
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس الحية (تأمين 3 مراحل + فلتر الجلسات الذهبي + تقويم الأيام) تعمل على البورت: ${PORT}`);
+  console.log(`🚀 منصة الفوركس الحية (قفل تضارب الدولار + تأمين ذكي + حظر تكرار الستوب) تعمل على البورت: ${PORT}`);
 });

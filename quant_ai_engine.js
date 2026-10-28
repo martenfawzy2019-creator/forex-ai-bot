@@ -780,7 +780,7 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const sessionInfo = getMarketSessionAndKillzone();
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
   const price = Number(techData.currentPrice);
-  const { ema20, rsi14, trendByEMA, divergenceStatus } = techData.classical;
+  const { ema20, ema50, rsi14, atr14, trendByEMA, divergenceStatus } = techData.classical;
   const { pocPrice } = techData.volumeAnalysis;
   const { pivotP } = techData.pivots;
   const tvRec = techData.tvRecommend || 0;
@@ -792,57 +792,63 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const highHasBullDiv = highDiv.includes("Bullish Divergence");
   const highHasBearDiv = highDiv.includes("Bearish Divergence");
 
+  // فلتر منع مطاردة الشموع المتضخمة (Anti-Overextension Filter):
+  // إذا ابتعد السعر عن متوسط EMA20 بأكثر من 1.35 ضعف الـ ATR، نمنع الدخول في القمة/القاع وننتظر التصحيح!
+  const distFromEma20 = Math.abs(price - ema20);
+  const isOverextended = atr14 > 0 && distFromEma20 > atr14 * 1.35;
+
   let bullPoints = 0;
   let bearPoints = 0;
 
   if (mtfReport.isAligned && mtfReport.directionBias === "BULLISH") bullPoints += 2;
   if (mtfReport.isAligned && mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
-  if (trendByEMA === "صاعد" && price > ema20) bullPoints += 2;
-  if (trendByEMA === "هابط" && price < ema20) bearPoints += 2;
+  if (trendByEMA === "صاعد" && price > ema20 && price > ema50) bullPoints += 2;
+  if (trendByEMA === "هابط" && price < ema20 && price < ema50) bearPoints += 2;
 
-  if (tvRec >= 0.15) bullPoints += 1;
-  if (tvRec <= -0.15) bearPoints += 1;
+  if (tvRec >= 0.20) bullPoints += 1;
+  if (tvRec <= -0.20) bearPoints += 1;
 
   if (price > pocPrice && price > pivotP) bullPoints += 1;
   if (price < pocPrice && price < pivotP) bearPoints += 1;
 
-  if (rsi14 >= 48 && rsi14 <= 64) bullPoints += 1;
-  if (rsi14 <= 52 && rsi14 >= 38) bearPoints += 1;
+  // نطاق RSI مثالي يمنع الشراء في التشبع الشرائي (> 62) أو البيع في التشبع البيعي (< 38)
+  if (rsi14 >= 50 && rsi14 <= 62) bullPoints += 1;
+  if (rsi14 <= 50 && rsi14 >= 38) bearPoints += 1;
 
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  if (hasBullDiv || highHasBullDiv || rsi14 < 38) {
+  if (hasBullDiv || highHasBullDiv || rsi14 < 39) {
     bearPoints = Math.max(0, bearPoints - 4);
   }
-  if (hasBearDiv || highHasBearDiv || rsi14 > 65) {
+  if (hasBearDiv || highHasBearDiv || rsi14 > 63) {
     bullPoints = Math.max(0, bullPoints - 4);
   }
 
-  // الفلتر الذهبي 1: حظر الدخول وقت الأخبار القوية أو وقت "المنطقة الميتة" (21:00 - 00:00 UTC)
-  if (newsShield?.shieldActive || sessionInfo.isDeadZone) {
+  if (newsShield?.shieldActive || sessionInfo.isDeadZone || isOverextended) {
     return {
       allowedSignal: "حياد / انتظار",
       maxConfidence: 60,
       bullPoints,
       bearPoints,
       dxyCorr,
-      sessionBlockReason: sessionInfo.isDeadZone
-        ? "⏸️ الفلتر الذهبي: تم حجب التداول في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone)"
+      sessionBlockReason: isOverextended
+        ? "⏳ فلتر عدم مطاردة القمم/القيعان: السعر متضخم وبعيد عن متوسط القيمة (EMA20)، البوت ينتظر تصحيحاً آمناً للدخول."
+        : sessionInfo.isDeadZone
+        ? "⏸️ الفلتر الذهبي: تم حجب التداول في فترة إغلاق البنوك واتساع السبريد"
         : "⛔ درع الأخبار مفعل",
     };
   }
 
-  // الفلتر الذهبي 2: تحديد النقاط المطلوبة حسب قوة سيولة الجلسة (7/8 في آسيا، 6/8 في لندن ونيويورك)
-  const minRequired = sessionInfo.requiredScore || 6;
+  const minRequired = sessionInfo.requiredScore || 7; // رفع الحد الأدنى إلى 7 من 8 في جميع الجلسات لضمان أعلى دقة
 
   if (
     mtfReport.isAligned &&
     bullPoints >= minRequired &&
     !hasBearDiv &&
     !highHasBearDiv &&
-    rsi14 < 65 &&
+    rsi14 <= 62 &&
     dxyCorr.allowedBias !== "BEARISH"
   ) {
     return { allowedSignal: "صعود قوي", maxConfidence: Math.min(95, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
@@ -852,7 +858,7 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
     bearPoints >= minRequired &&
     !hasBullDiv &&
     !highHasBullDiv &&
-    rsi14 > 37 &&
+    rsi14 >= 38 &&
     dxyCorr.allowedBias !== "BULLISH"
   ) {
     return { allowedSignal: "هبوط قوي", maxConfidence: Math.min(95, 78 + bearPoints * 2), bullPoints, bearPoints, dxyCorr };
