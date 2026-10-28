@@ -206,8 +206,7 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
 }
 
 /**
- * الفلتر الذهبي للجلسات والسيولة (Smart Session & Dead-Zone Filter):
- * يحدد بدقة أوقات السيولة المؤسسية، الجلسة الآسيوية، والمنطقة الميتة (Rollover Dead Zone)
+ * الفلتر الذهبي للجلسات والسيولة (Smart Session & Dead-Zone Filter)
  */
 export function getMarketSessionAndKillzone() {
   const now = new Date();
@@ -232,7 +231,7 @@ export function getMarketSessionAndKillzone() {
     };
   }
 
-  // المنطقة الميتة (Rollover & Post-NY Close: 21:00 to 23:59 UTC) -> منع الصفقات تماماً لمنع الفخاخ
+  // المنطقة الميتة (Rollover & Post-NY Close: 21:00 to 23:59 UTC)
   if (utcHour >= 21 && utcHour <= 23) {
     return {
       sessionName: "⚠️ فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone)",
@@ -253,8 +252,8 @@ export function getMarketSessionAndKillzone() {
       isDeadZone: false,
       isAsianSession: false,
       isMarketClosed: false,
-      tpMultiplier: 1.25,
-      requiredScore: 6,
+      tpMultiplier: 1.15,
+      requiredScore: 7,
       liquidityQuality: "سيولة مؤسسية قصوى (أفضل وقت للتداول)",
     };
   } else if (utcHour >= 7 && utcHour < 12) {
@@ -264,8 +263,8 @@ export function getMarketSessionAndKillzone() {
       isDeadZone: false,
       isAsianSession: false,
       isMarketClosed: false,
-      tpMultiplier: 1.25,
-      requiredScore: 6,
+      tpMultiplier: 1.15,
+      requiredScore: 7,
       liquidityQuality: "سيولة بنكية عالية",
     };
   } else if (utcHour >= 16 && utcHour < 21) {
@@ -275,12 +274,12 @@ export function getMarketSessionAndKillzone() {
       isDeadZone: false,
       isAsianSession: false,
       isMarketClosed: false,
-      tpMultiplier: 1.15,
-      requiredScore: 6,
+      tpMultiplier: 1.1,
+      requiredScore: 7,
       liquidityQuality: "سيولة متوسطة إلى عالية",
     };
   } else {
-    // الجلسة الآسيوية (00:00 to 07:00 UTC) -> اشتراط 7 نقاط من 8 + هدف سريع قريب (0.95x)
+    // الجلسة الآسيوية (00:00 to 07:00 UTC)
     return {
       sessionName: "🌙 الجلسة الآسيوية (تفعيل الفلتر الذهبي للأهداف السريعة)",
       isKillzone: false,
@@ -384,7 +383,7 @@ function calculateVolumeProfilePOC(candles, decimals = 5) {
 
 export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const sessionInfo = getMarketSessionAndKillzone();
-  const tpMult = sessionInfo.tpMultiplier || 1.2;
+  const tpMult = sessionInfo.tpMultiplier || 1.15;
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
   const closes = candles.map((c) => c.close);
   const len = candles.length;
@@ -427,7 +426,7 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const atr14 = tv?.atr || calcATR(candles, 14);
   const pocPrice = calculateVolumeProfilePOC(candles, decimals);
 
-  const recentSwingSlice = candles.slice(-12);
+  const recentSwingSlice = candles.slice(-14);
   const recentStructuralLow = Math.min(...recentSwingSlice.map((c) => c.low));
   const recentStructuralHigh = Math.max(...recentSwingSlice.map((c) => c.high));
 
@@ -482,23 +481,23 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const rvol = avgVol > 0 ? Number((current.volume / avgVol).toFixed(2)) : 1.0;
 
   let trendByEMA = "متذبذب";
-  if (exactCurrentPrice > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
-  else if (exactCurrentPrice < ema50 && ema20 <= ema50) trendByEMA = "هابط";
+  if (exactCurrentPrice > ema50 && ema20 > ema50) trendByEMA = "صاعد";
+  else if (exactCurrentPrice < ema50 && ema20 < ema50) trendByEMA = "هابط";
 
-  // تكييف الهدف الأول (TP1) ديناميكياً حسب سيولة الجلسة الحالية (سريع ومضمون في آسيا، واسع في لندن/نيويورك)
+  // ستوب هيكلي محمي بمسافة أمان كافية ضد ذيول الشموع (Wicks) + هدف واقعي سريع التحقق
   const smartBuySL = Number(
-    Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.6).toFixed(decimals)
+    Math.min(recentStructuralLow - atr14 * 0.6, exactCurrentPrice - atr14 * 1.85).toFixed(decimals)
   );
-  const buyRisk = Math.abs(exactCurrentPrice - smartBuySL) || atr14 * 1.5;
+  const buyRisk = Math.abs(exactCurrentPrice - smartBuySL) || atr14 * 1.8;
   const smartBuyTP1 = Number((exactCurrentPrice + buyRisk * tpMult).toFixed(decimals));
-  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * (tpMult + 0.85)).toFixed(decimals));
+  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * (tpMult + 0.8)).toFixed(decimals));
 
   const smartSellSL = Number(
-    Math.max(recentStructuralHigh + atr14 * 0.45, exactCurrentPrice + atr14 * 1.6).toFixed(decimals)
+    Math.max(recentStructuralHigh + atr14 * 0.6, exactCurrentPrice + atr14 * 1.85).toFixed(decimals)
   );
-  const sellRisk = Math.abs(smartSellSL - exactCurrentPrice) || atr14 * 1.5;
+  const sellRisk = Math.abs(smartSellSL - exactCurrentPrice) || atr14 * 1.8;
   const smartSellTP1 = Number((exactCurrentPrice - sellRisk * tpMult).toFixed(decimals));
-  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * (tpMult + 0.85)).toFixed(decimals));
+  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * (tpMult + 0.8)).toFixed(decimals));
 
   return {
     currentPrice: exactCurrentPrice.toFixed(decimals),
@@ -506,6 +505,11 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
     changePercent: tv?.changePercent || 0,
     changeAbs: tv?.changeAbs || 0,
     tvRecommend: tv?.tvRecommend || 0,
+    macd: tv?.macd || 0,
+    macdSignal: tv?.macdSignal || 0,
+    isBullCandle: exactCurrentPrice >= current.open,
+    isBearCandle: exactCurrentPrice <= current.open,
+    pricePositionPercent,
     decimals,
     smartLevels: {
       buy: {
@@ -773,17 +777,18 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 }
 
 /**
- * محرك التقييم الخوارزمي المدعوم بالفلتر الذهبي للجلسات:
- * يمنع الصفقات في المنطقة الميتة (Dead-Zone)، ويفرض شروط 7/8 في آسيا لمنع ضرب الستوب
+ * محرك التقييم الخوارزمي الصارم:
+ * يمنع الشراء في القمم، يمنع البيع في القيعان، ويكشف التذبذب العرضي (Choppy Market)
  */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
   const sessionInfo = getMarketSessionAndKillzone();
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
   const price = Number(techData.currentPrice);
-  const { ema20, ema50, rsi14, atr14, trendByEMA, divergenceStatus } = techData.classical;
+  const { ema20, ema50, ema200, rsi14, atr14, trendByEMA, divergenceStatus } = techData.classical;
   const { pocPrice } = techData.volumeAnalysis;
   const { pivotP } = techData.pivots;
   const tvRec = techData.tvRecommend || 0;
+  const posPct = techData.pricePositionPercent ?? 50;
 
   const hasBullDiv = divergenceStatus.includes("Bullish Divergence");
   const hasBearDiv = divergenceStatus.includes("Bearish Divergence");
@@ -792,10 +797,17 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const highHasBullDiv = highDiv.includes("Bullish Divergence");
   const highHasBearDiv = highDiv.includes("Bearish Divergence");
 
-  // فلتر منع مطاردة الشموع المتضخمة (Anti-Overextension Filter):
-  // إذا ابتعد السعر عن متوسط EMA20 بأكثر من 1.35 ضعف الـ ATR، نمنع الدخول في القمة/القاع وننتظر التصحيح!
+  // 1. فلتر منع مطاردة الشموع المتضخمة البعيدة عن EMA20
   const distFromEma20 = Math.abs(price - ema20);
-  const isOverextended = atr14 > 0 && distFromEma20 > atr14 * 1.35;
+  const isOverextended = atr14 > 0 && distFromEma20 > atr14 * 1.15;
+
+  // 2. فلتر منع الشراء في القمم (أعلى 78% من الموجة) ومنع البيع في القيعان (أسفل 22% من الموجة)
+  const isAtExtremeTop = posPct >= 78;
+  const isAtExtremeBottom = posPct <= 22;
+
+  // 3. فلتر كشف السوق العرضي المتذبذب (إذا كانت المسافة بين EMA20 و EMA50 ضيقة جداً أقل من 0.22 * ATR)
+  const emaSpread = Math.abs(ema20 - ema50);
+  const isChoppyMarket = atr14 > 0 && emaSpread < atr14 * 0.22;
 
   let bullPoints = 0;
   let bearPoints = 0;
@@ -803,52 +815,55 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   if (mtfReport.isAligned && mtfReport.directionBias === "BULLISH") bullPoints += 2;
   if (mtfReport.isAligned && mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
-  if (trendByEMA === "صاعد" && price > ema20 && price > ema50) bullPoints += 2;
-  if (trendByEMA === "هابط" && price < ema20 && price < ema50) bearPoints += 2;
+  if (trendByEMA === "صاعد" && price > ema20 && price > ema50 && ema20 > ema200) bullPoints += 2;
+  if (trendByEMA === "هابط" && price < ema20 && price < ema50 && ema20 < ema200) bearPoints += 2;
 
-  if (tvRec >= 0.20) bullPoints += 1;
-  if (tvRec <= -0.20) bearPoints += 1;
+  if (tvRec >= 0.22 && techData.isBullCandle) bullPoints += 1;
+  if (tvRec <= -0.22 && techData.isBearCandle) bearPoints += 1;
 
   if (price > pocPrice && price > pivotP) bullPoints += 1;
   if (price < pocPrice && price < pivotP) bearPoints += 1;
 
-  // نطاق RSI مثالي يمنع الشراء في التشبع الشرائي (> 62) أو البيع في التشبع البيعي (< 38)
-  if (rsi14 >= 50 && rsi14 <= 62) bullPoints += 1;
-  if (rsi14 <= 50 && rsi14 >= 38) bearPoints += 1;
+  if (rsi14 >= 51 && rsi14 <= 61) bullPoints += 1;
+  if (rsi14 <= 49 && rsi14 >= 39) bearPoints += 1;
 
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  if (hasBullDiv || highHasBullDiv || rsi14 < 39) {
+  if (hasBullDiv || highHasBullDiv || rsi14 < 39 || isAtExtremeBottom) {
     bearPoints = Math.max(0, bearPoints - 4);
   }
-  if (hasBearDiv || highHasBearDiv || rsi14 > 63) {
+  if (hasBearDiv || highHasBearDiv || rsi14 > 62 || isAtExtremeTop) {
     bullPoints = Math.max(0, bullPoints - 4);
   }
 
-  if (newsShield?.shieldActive || sessionInfo.isDeadZone || isOverextended) {
+  if (newsShield?.shieldActive || sessionInfo.isDeadZone || isOverextended || isChoppyMarket) {
     return {
       allowedSignal: "حياد / انتظار",
       maxConfidence: 60,
       bullPoints,
       bearPoints,
       dxyCorr,
-      sessionBlockReason: isOverextended
-        ? "⏳ فلتر عدم مطاردة القمم/القيعان: السعر متضخم وبعيد عن متوسط القيمة (EMA20)، البوت ينتظر تصحيحاً آمناً للدخول."
+      sessionBlockReason: isChoppyMarket
+        ? "🛡️ فلتر التذبذب العرضي (Choppy Market): المتوسطات متشابكة والسوق بلا اتجاه واضح، تم حجب الدخول لحماية الحساب."
+        : isOverextended
+        ? "⏳ فلتر عدم مطاردة السعر: الشمعة متضخمة وبعيدة عن EMA20، ننتظر إعادة الاختبار."
         : sessionInfo.isDeadZone
-        ? "⏸️ الفلتر الذهبي: تم حجب التداول في فترة إغلاق البنوك واتساع السبريد"
+        ? "⏸️ الفلتر الذهبي: فترة إغلاق البنوك واتساع السبريد"
         : "⛔ درع الأخبار مفعل",
     };
   }
 
-  const minRequired = sessionInfo.requiredScore || 7; // رفع الحد الأدنى إلى 7 من 8 في جميع الجلسات لضمان أعلى دقة
+  const minRequired = 7;
 
   if (
     mtfReport.isAligned &&
     bullPoints >= minRequired &&
+    !isAtExtremeTop &&
+    techData.isBullCandle &&
     !hasBearDiv &&
     !highHasBearDiv &&
-    rsi14 <= 62 &&
+    rsi14 <= 61 &&
     dxyCorr.allowedBias !== "BEARISH"
   ) {
     return { allowedSignal: "صعود قوي", maxConfidence: Math.min(95, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
@@ -856,9 +871,11 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   if (
     mtfReport.isAligned &&
     bearPoints >= minRequired &&
+    !isAtExtremeBottom &&
+    techData.isBearCandle &&
     !hasBullDiv &&
     !highHasBullDiv &&
-    rsi14 >= 38 &&
+    rsi14 >= 39 &&
     dxyCorr.allowedBias !== "BULLISH"
   ) {
     return { allowedSignal: "هبوط قوي", maxConfidence: Math.min(95, 78 + bearPoints * 2), bullPoints, bearPoints, dxyCorr };
@@ -891,7 +908,7 @@ export async function generateAISignal(
 [نتيجة الفلتر الخوارزمي المباشر والفلتر الذهبي للجلسات]:
 - الجلسة الحالية: ${sessionInfo.sessionName} (${sessionInfo.liquidityQuality}).
 - القرار المسموح به الآن: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
-- نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8 (المطلوب في هذه الجلسة: ${sessionInfo.requiredScore || 6}/8).
+- نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8 (المطلوب: 7/8).
 - حالة الفريم الأكبر (${higherTFName}): ${mtfReport.mtfStatus}.
 - حالة الدايفرجنس: ${techData.classical.divergenceStatus}.
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
@@ -996,7 +1013,7 @@ export async function generateAISignal(
   } else {
     aiResult.signal = "حياد / انتظار";
     aiResult.confidenceScore = Math.min(68, aiResult.confidenceScore || 60);
-    aiResult.consensusCount = `توافق ${Math.max(preCheck.bullPoints, preCheck.bearPoints)} من 8 (المطلوب ${sessionInfo.requiredScore || 6})`;
+    aiResult.consensusCount = `توافق ${Math.max(preCheck.bullPoints, preCheck.bearPoints)} من 8 (المطلوب 7)`;
   }
 
   return aiResult;
