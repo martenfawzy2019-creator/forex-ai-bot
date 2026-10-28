@@ -30,10 +30,6 @@ const TV_TF_SUFFIX = {
   "1W": "|1W",
 };
 
-/**
- * 1. محرك البث الحي (Live Tick Streamer):
- * يسحب الأسعار اللحظية والتغير اللحظي من TradingView مباشرة كل ثانيتين لكل الأزواج
- */
 export async function fetchLiveTradingViewTicks() {
   try {
     const tickers = Object.values(TV_EXACT_TICKERS);
@@ -80,9 +76,6 @@ export async function fetchLiveTradingViewTicks() {
   }
 }
 
-/**
- * 2. سحب المؤشرات الفنية الحقيقية المحسوبة داخل سيرفر TradingView نفسه للفريم المختار
- */
 export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timeframe = "15m") {
   const tf = TV_TF_SUFFIX[timeframe] !== undefined ? TV_TF_SUFFIX[timeframe] : "|15";
   const tvTicker = TV_EXACT_TICKERS[symbol] || `OANDA:${symbol}`;
@@ -153,9 +146,6 @@ export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timefram
   return null;
 }
 
-/**
- * 3. جلب الشموع ومعايرتها بالكامل مع السعر اللحظي لـ TradingView
- */
 export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
   const ticker = FOREX_SYMBOLS_MAP[symbol] || "EURUSD=X";
   const yahooInterval = interval === "1W" ? "1d" : interval;
@@ -215,6 +205,10 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
   return calibratedCandles;
 }
 
+/**
+ * الفلتر الذهبي للجلسات والسيولة (Smart Session & Dead-Zone Filter):
+ * يحدد بدقة أوقات السيولة المؤسسية، الجلسة الآسيوية، والمنطقة الميتة (Rollover Dead Zone)
+ */
 export function getMarketSessionAndKillzone() {
   const now = new Date();
   const utcDay = now.getUTCDay();
@@ -229,8 +223,26 @@ export function getMarketSessionAndKillzone() {
     return {
       sessionName: "🛑 عطلة نهاية الأسبوع (السوق مغلق - التحليل متوقف تماماً)",
       isKillzone: false,
+      isDeadZone: true,
+      isAsianSession: false,
       isMarketClosed: true,
+      tpMultiplier: 1.0,
+      requiredScore: 8,
       liquidityQuality: "السوق مغلق رسمياً حتى افتتاح الأحد 21:00 UTC",
+    };
+  }
+
+  // المنطقة الميتة (Rollover & Post-NY Close: 21:00 to 23:59 UTC) -> منع الصفقات تماماً لمنع الفخاخ
+  if (utcHour >= 21 && utcHour <= 23) {
+    return {
+      sessionName: "⚠️ فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone)",
+      isKillzone: false,
+      isDeadZone: true,
+      isAsianSession: true,
+      isMarketClosed: false,
+      tpMultiplier: 0.9,
+      requiredScore: 8,
+      liquidityQuality: "سيولة منعدمة (ممنوع فتح صفقات جديدة لحماية رأس المال)",
     };
   }
 
@@ -238,29 +250,46 @@ export function getMarketSessionAndKillzone() {
     return {
       sessionName: "🔥 تقاطع لندن ونيويورك (NY/London Overlap Killzone)",
       isKillzone: true,
+      isDeadZone: false,
+      isAsianSession: false,
       isMarketClosed: false,
-      liquidityQuality: "سيولة مؤسسية قصوى",
+      tpMultiplier: 1.25,
+      requiredScore: 6,
+      liquidityQuality: "سيولة مؤسسية قصوى (أفضل وقت للتداول)",
     };
   } else if (utcHour >= 7 && utcHour < 12) {
     return {
       sessionName: "⚡ جلسة لندن (London Killzone)",
       isKillzone: true,
+      isDeadZone: false,
+      isAsianSession: false,
       isMarketClosed: false,
-      liquidityQuality: "سيولة عالية",
+      tpMultiplier: 1.25,
+      requiredScore: 6,
+      liquidityQuality: "سيولة بنكية عالية",
     };
-  } else if (utcHour >= 16 && utcHour < 20) {
+  } else if (utcHour >= 16 && utcHour < 21) {
     return {
       sessionName: "🗽 جلسة نيويورك المسائية",
       isKillzone: false,
+      isDeadZone: false,
+      isAsianSession: false,
       isMarketClosed: false,
-      liquidityQuality: "سيولة متوسطة/عالية",
+      tpMultiplier: 1.15,
+      requiredScore: 6,
+      liquidityQuality: "سيولة متوسطة إلى عالية",
     };
   } else {
+    // الجلسة الآسيوية (00:00 to 07:00 UTC) -> اشتراط 7 نقاط من 8 + هدف سريع قريب (0.95x)
     return {
-      sessionName: "🌙 الجلسة الآسيوية",
+      sessionName: "🌙 الجلسة الآسيوية (تفعيل الفلتر الذهبي للأهداف السريعة)",
       isKillzone: false,
+      isDeadZone: false,
+      isAsianSession: true,
       isMarketClosed: false,
-      liquidityQuality: "سيولة هادئة (تجميع)",
+      tpMultiplier: 0.95,
+      requiredScore: 7,
+      liquidityQuality: "سيولة هادئة (شروط مشددة 7/8 وأهداف قريبة مضمونة)",
     };
   }
 }
@@ -310,10 +339,6 @@ function calcRSISeries(closes, period = 14) {
   return rsiArr;
 }
 
-/**
- * كاشف الدايفرجنس المؤسسي الدقيق:
- * لا يطلق تنبيه دايفرجنس إلا إذا كان هناك تشبع حقيقي وفارق زخم واضح (> 4 نقاط RSI) لمنع الإشارات الكاذبة
- */
 function detectAlgorithmicDivergence(candles, rsiSeries, currentTvRsi) {
   const len = candles.length;
   if (len < 30) return "لا يوجد دايفرجنس";
@@ -330,11 +355,9 @@ function detectAlgorithmicDivergence(candles, rsiSeries, currentTvRsi) {
 
   const effectiveRsi = currentTvRsi || rsiSeries[len - 1];
 
-  // دايفرجنس بيعي حقيقي: قمة سعرية أعلى + قمة RSI أقل بـ 4 نقاط على الأقل + RSI في منطقة مرتفعة
   if (recentHigh > olderHigh && recentRsiMax < olderRsiMax - 4 && olderRsiMax >= 58 && effectiveRsi >= 52) {
     return "🔴 دايفرجنس بيعي سلبي مؤكد (Bearish Divergence)";
   }
-  // دايفرجنس شرائي حقيقي: قاع سعري أدنى + قاع RSI أعلى بـ 4 نقاط على الأقل + RSI في منطقة منخفضة
   if (recentLow < olderLow && recentRsiMin > olderRsiMin + 4 && olderRsiMin <= 42 && effectiveRsi <= 48) {
     return "🟢 دايفرجنس شرائي إيجابي مؤكد (Bullish Divergence)";
   }
@@ -360,6 +383,8 @@ function calculateVolumeProfilePOC(candles, decimals = 5) {
 }
 
 export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
+  const sessionInfo = getMarketSessionAndKillzone();
+  const tpMult = sessionInfo.tpMultiplier || 1.2;
   const decimals = symbol === "XAUUSD" || symbol === "DXY" ? 2 : symbol === "USDJPY" ? 3 : 5;
   const closes = candles.map((c) => c.close);
   const len = candles.length;
@@ -460,19 +485,20 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   if (exactCurrentPrice > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
   else if (exactCurrentPrice < ema50 && ema20 <= ema50) trendByEMA = "هابط";
 
+  // تكييف الهدف الأول (TP1) ديناميكياً حسب سيولة الجلسة الحالية (سريع ومضمون في آسيا، واسع في لندن/نيويورك)
   const smartBuySL = Number(
-    Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.65).toFixed(decimals)
+    Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.6).toFixed(decimals)
   );
   const buyRisk = Math.abs(exactCurrentPrice - smartBuySL) || atr14 * 1.5;
-  const smartBuyTP1 = Number((exactCurrentPrice + buyRisk * 1.25).toFixed(decimals));
-  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * 2.2).toFixed(decimals));
+  const smartBuyTP1 = Number((exactCurrentPrice + buyRisk * tpMult).toFixed(decimals));
+  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * (tpMult + 0.85)).toFixed(decimals));
 
   const smartSellSL = Number(
-    Math.max(recentStructuralHigh + atr14 * 0.45, exactCurrentPrice + atr14 * 1.65).toFixed(decimals)
+    Math.max(recentStructuralHigh + atr14 * 0.45, exactCurrentPrice + atr14 * 1.6).toFixed(decimals)
   );
   const sellRisk = Math.abs(smartSellSL - exactCurrentPrice) || atr14 * 1.5;
-  const smartSellTP1 = Number((exactCurrentPrice - sellRisk * 1.25).toFixed(decimals));
-  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * 2.2).toFixed(decimals));
+  const smartSellTP1 = Number((exactCurrentPrice - sellRisk * tpMult).toFixed(decimals));
+  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * (tpMult + 0.85)).toFixed(decimals));
 
   return {
     currentPrice: exactCurrentPrice.toFixed(decimals),
@@ -535,10 +561,6 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   };
 }
 
-/**
- * فحص التوافق الحقيقي مع الفريم الأكبر (True MTF Alignment):
- * لا يعتبر الفريم الأكبر متوافقاً في الهبوط إذا كان الفريم الأكبر عليه دايفرجنس شرائي أو تشبع بيعي (والعكس في الصعود)
- */
 export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) {
   const curTrend = currentTFTech.classical.trendByEMA;
   const highTrend = higherTFTech.classical.trendByEMA;
@@ -548,7 +570,6 @@ export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) 
   const highHasBullDiv = highDiv.includes("Bullish Divergence");
   const highHasBearDiv = highDiv.includes("Bearish Divergence");
 
-  // فحص التوافق الصاعد
   if (curTrend === "صاعد" && highTrend === "صاعد") {
     if (highHasBearDiv || highRsi > 68) {
       return {
@@ -564,7 +585,6 @@ export function evaluateMTFAlignment(currentTFTech, higherTFTech, higherTFName) 
     };
   }
 
-  // فحص التوافق الهابط
   if (curTrend === "هابط" && highTrend === "هابط") {
     if (highHasBullDiv || highRsi < 35) {
       return {
@@ -685,7 +705,7 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 
       const riskDist = Math.abs(entry - sl);
       const tp = isBuy ? entry + riskDist * 1.2 : entry - riskDist * 1.2;
-      const breakEvenTrigger = isBuy ? entry + riskDist * 0.55 : entry - riskDist * 0.55;
+      const breakEvenTrigger = isBuy ? entry + riskDist * 0.45 : entry - riskDist * 0.45;
 
       let outcome = "OPEN";
       let breakEvenActive = false;
@@ -753,10 +773,11 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
 }
 
 /**
- * محرك التقييم الخوارزمي المترابط عبر الفريمات:
- * يفحص الفريم الحالي + الفريم الأكبر معاً، ويمنع إصدار صفقة على فريم صغير إذا كان الفريم الأكبر في حالة حياد أو انعكاس
+ * محرك التقييم الخوارزمي المدعوم بالفلتر الذهبي للجلسات:
+ * يمنع الصفقات في المنطقة الميتة (Dead-Zone)، ويفرض شروط 7/8 في آسيا لمنع ضرب الستوب
  */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
+  const sessionInfo = getMarketSessionAndKillzone();
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
   const price = Number(techData.currentPrice);
   const { ema20, rsi14, trendByEMA, divergenceStatus } = techData.classical;
@@ -774,56 +795,61 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   let bullPoints = 0;
   let bearPoints = 0;
 
-  // 1. توافق الفريمات الحقيقي (شرط أساسي)
   if (mtfReport.isAligned && mtfReport.directionBias === "BULLISH") bullPoints += 2;
   if (mtfReport.isAligned && mtfReport.directionBias === "BEARISH") bearPoints += 2;
 
-  // 2. اتجاه المتوسطات في TradingView
   if (trendByEMA === "صاعد" && price > ema20) bullPoints += 2;
   if (trendByEMA === "هابط" && price < ema20) bearPoints += 2;
 
-  // 3. تقييم TradingView الفني المباشر (Recommend.All)
   if (tvRec >= 0.15) bullPoints += 1;
   if (tvRec <= -0.15) bearPoints += 1;
 
-  // 4. تمركز السيولة والمحور البنكي
   if (price > pocPrice && price > pivotP) bullPoints += 1;
   if (price < pocPrice && price < pivotP) bearPoints += 1;
 
-  // 5. زخم RSI من TradingView
-  if (rsi14 >= 48 && rsi14 <= 65) bullPoints += 1;
+  if (rsi14 >= 48 && rsi14 <= 64) bullPoints += 1;
   if (rsi14 <= 52 && rsi14 >= 38) bearPoints += 1;
 
-  // 6. توافق مؤشر الدولار DXY
   if (dxyCorr.allowedBias === "BULLISH") bullPoints += 1;
   if (dxyCorr.allowedBias === "BEARISH") bearPoints += 1;
 
-  // منع عكس الدايفرجنس على الفريم الحالي أو الفريم الأكبر!
   if (hasBullDiv || highHasBullDiv || rsi14 < 38) {
     bearPoints = Math.max(0, bearPoints - 4);
   }
-  if (hasBearDiv || highHasBearDiv || rsi14 > 66) {
+  if (hasBearDiv || highHasBearDiv || rsi14 > 65) {
     bullPoints = Math.max(0, bullPoints - 4);
   }
 
-  if (newsShield?.shieldActive) {
-    return { allowedSignal: "حياد / انتظار", maxConfidence: 60, bullPoints, bearPoints, dxyCorr };
+  // الفلتر الذهبي 1: حظر الدخول وقت الأخبار القوية أو وقت "المنطقة الميتة" (21:00 - 00:00 UTC)
+  if (newsShield?.shieldActive || sessionInfo.isDeadZone) {
+    return {
+      allowedSignal: "حياد / انتظار",
+      maxConfidence: 60,
+      bullPoints,
+      bearPoints,
+      dxyCorr,
+      sessionBlockReason: sessionInfo.isDeadZone
+        ? "⏸️ الفلتر الذهبي: تم حجب التداول في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone)"
+        : "⛔ درع الأخبار مفعل",
+    };
   }
 
-  // لا نصدر صعود قوي أو هبوط قوي إلا إذا كان الفريم الأكبر متوافقاً فعلياً (mtfReport.isAligned === true)
+  // الفلتر الذهبي 2: تحديد النقاط المطلوبة حسب قوة سيولة الجلسة (7/8 في آسيا، 6/8 في لندن ونيويورك)
+  const minRequired = sessionInfo.requiredScore || 6;
+
   if (
     mtfReport.isAligned &&
-    bullPoints >= 6 &&
+    bullPoints >= minRequired &&
     !hasBearDiv &&
     !highHasBearDiv &&
-    rsi14 < 66 &&
+    rsi14 < 65 &&
     dxyCorr.allowedBias !== "BEARISH"
   ) {
     return { allowedSignal: "صعود قوي", maxConfidence: Math.min(95, 78 + bullPoints * 2), bullPoints, bearPoints, dxyCorr };
   }
   if (
     mtfReport.isAligned &&
-    bearPoints >= 6 &&
+    bearPoints >= minRequired &&
     !hasBullDiv &&
     !highHasBullDiv &&
     rsi14 > 37 &&
@@ -856,9 +882,10 @@ export async function generateAISignal(
 أنت كبير محللي الفوركس المؤسسي (Chief Institutional Forex Strategist).
 حلل زوج (${symbol}) على فريم (${timeframe}) بناءً على بيانات وسعر منصة TradingView (OANDA) اللحظي المباشر وهو (${price}).
 
-[نتيجة الفلتر الخوارزمي المباشر من TradingView]:
+[نتيجة الفلتر الخوارزمي المباشر والفلتر الذهبي للجلسات]:
+- الجلسة الحالية: ${sessionInfo.sessionName} (${sessionInfo.liquidityQuality}).
 - القرار المسموح به الآن: (${preCheck.allowedSignal}) بحد أقصى للثقة (${preCheck.maxConfidence}%).
-- نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8.
+- نقاط الشراء: ${preCheck.bullPoints}/8 | نقاط البيع: ${preCheck.bearPoints}/8 (المطلوب في هذه الجلسة: ${sessionInfo.requiredScore || 6}/8).
 - حالة الفريم الأكبر (${higherTFName}): ${mtfReport.mtfStatus}.
 - حالة الدايفرجنس: ${techData.classical.divergenceStatus}.
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
@@ -963,7 +990,7 @@ export async function generateAISignal(
   } else {
     aiResult.signal = "حياد / انتظار";
     aiResult.confidenceScore = Math.min(68, aiResult.confidenceScore || 60);
-    aiResult.consensusCount = `توافق ${Math.max(preCheck.bullPoints, preCheck.bearPoints)} من 8 معايير مؤسسية`;
+    aiResult.consensusCount = `توافق ${Math.max(preCheck.bullPoints, preCheck.bearPoints)} من 8 (المطلوب ${sessionInfo.requiredScore || 6})`;
   }
 
   return aiResult;
