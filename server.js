@@ -33,7 +33,6 @@ app.use(express.static("public"));
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-// حفظ السجل في المجلد الرئيسي الدائم خارج Git حتى لا يُمسح أبداً عند عمل git pull
 const PERMANENT_LEDGER_PATH = path.join(os.homedir(), "forex_permanent_ledger.json");
 const BACKUP_LEDGER_PATH = path.join(os.homedir(), "forex_permanent_ledger.bak.json");
 const OLD_LOCAL_LEDGER = "./trades_ledger.json";
@@ -64,9 +63,6 @@ function getSymbolDecimals(symbol) {
   return 5;
 }
 
-/**
- * تحديد اتجاه الرهان على الدولار الأمريكي (USD Bias) لكل صفقة لمنع فتح صفقات متضاربة في نفس الوقت
- */
 function getTradeUsdBias(symbol, direction) {
   if (["XAUUSD", "EURUSD", "GBPUSD"].includes(symbol)) {
     return direction === "BUY" ? "USD_WEAK" : "USD_STRONG";
@@ -77,9 +73,6 @@ function getTradeUsdBias(symbol, direction) {
   return "NEUTRAL";
 }
 
-/**
- * حساب عدد النقاط (Pips) القياسي لكل زوج عملات أو ذهب بدقة
- */
 function calculatePips(symbol, entryPrice, targetOrCurrentPrice, direction) {
   const entry = Number(entryPrice);
   const current = Number(targetOrCurrentPrice);
@@ -93,9 +86,6 @@ function calculatePips(symbol, entryPrice, targetOrCurrentPrice, direction) {
   return Number((rawDiff * multiplier).toFixed(1));
 }
 
-/**
- * إرسال رسائل تليجرام فورية (للتأمين، حجز الأرباح، الإغلاق بالـ Pips، والتقرير اليومي)
- */
 async function sendCustomTelegramMessage(htmlText) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const chatId = process.env.TELEGRAM_CHAT_ID;
@@ -154,13 +144,6 @@ function extractNum(str) {
 
 loadLedger();
 
-/**
- * [التعديل الثاني]: إدارة الصفقات بنظام القناص صفر خسارة (Zero-Loss Sniper Engine)
- * 1. عدم تضييق الستوب لوز قبل التأمين (لمنع ضرب ستوب 3 نقاط بالخطأ).
- * 2. عند قطع 40% من الهدف السريع (4 نقاط في العملات أو 17 نقطة في الذهب):
- *    يتم نقل الستوب فوراً لنقطة الدخول + ربح بسيط (Break-Even) لتصبح الخسارة مستحيلة (0 Loss)!
- * 3. عند قطع 70% من الهدف: يتم حجز 55% من الربح رسمياً (Profit Lock).
- */
 async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
   if (!livePriceNum || isNaN(livePriceNum)) return false;
   const trades = loadLedger();
@@ -173,7 +156,6 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
       t.currentLivePrice = livePriceNum;
       t.livePips = calculatePips(t.symbol, t.entry, livePriceNum, t.direction);
 
-      // حماية أول 15 ثانية من التذبذب اللحظي وقت الفتح
       if (nowMs - (t.openedAtMs || 0) < 15000) continue;
 
       const entry = Number(t.entry);
@@ -185,7 +167,6 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
         t.maxReachedPrice = Math.max(Number(t.maxReachedPrice || entry), livePriceNum);
         const maxProgress = (t.maxReachedPrice - entry) / targetDist;
 
-        // المرحلة 2 (عند 70% من الهدف): حجز 55% من الربح رسمياً
         if (maxProgress >= 0.70 && (t.lockStage || 0) < 3) {
           t.sl = Number((entry + targetDist * 0.55).toFixed(decimals));
           t.breakEvenSecured = true;
@@ -201,9 +182,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
               `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
               `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
           );
-        }
-        // المرحلة 1 (عند 40% فقط من الهدف السريع): تأمين فوري على الدخول + ربح بسيط (0 خسارة!)
-        else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
+        } else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
           t.sl = Number((entry + targetDist * 0.15).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 2;
@@ -221,7 +200,6 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           );
         }
 
-        // التحقق من ضرب الهدف الكامل أو الارتداد لمستوى الستوب/الربح المحجوز
         if (livePriceNum >= tp1) {
           const wonPips = Math.abs(calculatePips(t.symbol, entry, tp1, "BUY"));
           t.status = "WIN";
@@ -304,11 +282,9 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           }
         }
       } else if (t.direction === "SELL") {
-        // حالة البيع (SELL)
         t.minReachedPrice = Math.min(Number(t.minReachedPrice || entry), livePriceNum);
         const maxProgress = (entry - t.minReachedPrice) / targetDist;
 
-        // المرحلة 2 (عند 70% من الهدف): حجز 55% من الربح رسمياً
         if (maxProgress >= 0.70 && (t.lockStage || 0) < 3) {
           t.sl = Number((entry - targetDist * 0.55).toFixed(decimals));
           t.breakEvenSecured = true;
@@ -324,9 +300,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
               `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
               `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
           );
-        }
-        // المرحلة 1 (عند 40% فقط من الهدف السريع): تأمين فوري على الدخول + ربح بسيط (0 خسارة!)
-        else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
+        } else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
           t.sl = Number((entry - targetDist * 0.15).toFixed(decimals));
           t.breakEvenSecured = true;
           t.lockStage = 2;
@@ -433,9 +407,6 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
   return updated;
 }
 
-/**
- * حساب إحصائيات السجل وحصاد النقاط (Pips) اليومي والكلي
- */
 function getLedgerStatsSummary() {
   const trades = loadLedger();
   const todayStr = getEgyptDateString();
@@ -520,9 +491,6 @@ async function sendDailyTelegramReport() {
   return await sendCustomTelegramMessage(msg);
 }
 
-/**
- * رادار البث الحي للأسعار كل ثانيتين من TradingView
- */
 setInterval(async () => {
   try {
     const session = getMarketSessionAndKillzone();
@@ -546,10 +514,6 @@ setInterval(async () => {
   } catch (e) {}
 }, 2000);
 
-/**
- * [التعديل الرابع]: تسجيل الصفقات بشرط الثقة الفائقة (conf >= 94) فقط
- * مع قفل التضارب العكسي للدولار وقاطع الدائرة اليومي لأي زوج يضرب ستوب
- */
 async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision, sessionInfo, fullResultForTelegram) {
   if (sessionInfo?.isMarketClosed) {
     return getLedgerStatsSummary();
@@ -567,7 +531,6 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
   const sig = (aiDecision.signal || "").trim();
   const conf = Number(aiDecision.confidenceScore || 0);
 
-  // منع دخول أي صفقة أقل من 94% نهائياً
   const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 94;
 
   if (isConfirmedSuperStrong) {
@@ -576,13 +539,9 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
     const nowMs = Date.now();
     const newUsdBias = getTradeUsdBias(symbol, direction);
 
-    // 1. منع فتح صفقة إذا كانت هناك صفقة مفتوحة على نفس الزوج
     const hasOpenSamePair = trades.some((t) => t.symbol === symbol && t.status === "OPEN");
-
-    // 2. حد أقصى صفقتين مفتوحتين في نفس اللحظة لتركيز السيولة
     const totalOpenNow = trades.filter((t) => t.status === "OPEN").length;
 
-    // 3. منع فتح صفقة تضارب اتجاه الدولار لصفقة أخرى مفتوحة حالياً
     const hasConflictingUsdTrade = trades.some((t) => {
       if (t.status !== "OPEN") return false;
       const existingBias = getTradeUsdBias(t.symbol, t.direction);
@@ -592,7 +551,6 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
       );
     });
 
-    // 4. قاطع الدائرة اليومي: إذا ضرب هذا الزوج ستوب لوز اليوم في هذا الاتجاه، يُحظر الدخول عليه لباقي اليوم
     const failedTodayOnPair = trades.some(
       (t) =>
         t.symbol === symbol &&
@@ -601,7 +559,6 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
         (t.openedDate || todayStr) === todayStr
     );
 
-    // 5. تهدئة 90 دقيقة بين أي صفقتين على نفس الزوج
     const recentSameDirection = trades.find((t) => {
       if (t.symbol !== symbol || t.direction !== direction) return false;
       const refTime = t.closedAtMs || t.openedAtMs || 0;
@@ -821,7 +778,6 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     };
   }
 
-  // [التعديل الرابع]: منع عرض أو اعتماد أي صفقة تقل ثقتها عن 94%
   const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
     aiDecision.confidenceScore >= 94 &&
@@ -881,6 +837,26 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
   analysisCache.set(cacheKey, { time: now, data: finalResult });
   return finalResult;
 }
+
+/**
+ * 🎯 مسار الربط المباشر مع منصة MetaTrader 5 (EA Bridge Endpoint)
+ * يقرأه الإكسبرت من جهازك كل ثانيتين بصيغة نصية سريعة ومباشرة ليفتح ويؤمّن الصفقات تلقائياً
+ */
+app.get("/api/mt5-signals", (req, res) => {
+  try {
+    const trades = loadLedger();
+    const openTrades = trades.filter((t) => t.status === "OPEN");
+    // الصيغة: ID|SYMBOL|DIRECTION|ENTRY|SL|TP1|LOCK_STAGE
+    const lines = openTrades.map(
+      (t) =>
+        `${t.id}|${t.symbol}|${t.direction}|${t.entry}|${t.sl}|${t.tp1}|${t.lockStage || 0}`
+    );
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.send(lines.join("\n"));
+  } catch (err) {
+    res.status(500).send("");
+  }
+});
 
 app.get("/api/analyze", async (req, res) => {
   try {
@@ -994,7 +970,6 @@ app.get("/api/scan-all", async (req, res) => {
   }
 });
 
-// فحص دوري كل 5 دقائق لجميع الأزواج
 cron.schedule("*/5 * * * *", async () => {
   try {
     const session = getMarketSessionAndKillzone();
@@ -1008,7 +983,6 @@ cron.schedule("*/5 * * * *", async () => {
   } catch (err) {}
 });
 
-// إرسال تقرير الحصاد اليومي للـ Pips تلقائياً كل يوم الساعة 23:55 بتوقيت مصر
 cron.schedule(
   "55 23 * * 1-5",
   async () => {
@@ -1021,5 +995,5 @@ cron.schedule(
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس الحية (قناص 94%+ وتأمين فوري 40% ضد الخسارة) تعمل على البورت: ${PORT}`);
+  console.log(`🚀 منصة الفوركس الحية + جسر MT5 المباشر يعملان على البورت: ${PORT}`);
 });
