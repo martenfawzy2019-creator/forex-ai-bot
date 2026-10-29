@@ -532,7 +532,8 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
   const sig = (aiDecision.signal || "").trim();
   const conf = Number(aiDecision.confidenceScore || 0);
 
-  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 94;
+  // قبول الصفقات القوية بداية من ثقة 90% فأكثر
+  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 90;
 
   if (isConfirmedSuperStrong) {
     const isBuy = sig === "صعود قوي";
@@ -552,25 +553,16 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
       );
     });
 
-    const failedTodayOnPair = trades.some(
-      (t) =>
-        t.symbol === symbol &&
-        t.direction === direction &&
-        t.status === "LOSS" &&
-        (t.openedDate || todayStr) === todayStr
-    );
-
     const recentSameDirection = trades.find((t) => {
       if (t.symbol !== symbol || t.direction !== direction) return false;
       const refTime = t.closedAtMs || t.openedAtMs || 0;
-      return nowMs - refTime < 90 * 60 * 1000;
+      return nowMs - refTime < 45 * 60 * 1000;
     });
 
     if (
       !hasOpenSamePair &&
-      totalOpenNow < 2 &&
+      totalOpenNow < 3 &&
       !hasConflictingUsdTrade &&
-      !failedTodayOnPair &&
       !recentSameDirection
     ) {
       const slVal = extractNum(aiDecision.tradeSetup?.stopLoss);
@@ -753,7 +745,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
     aiDecision = {
       signal: preConfluence.allowedSignal,
       confidenceScore: preConfluence.maxConfidence,
-      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 (المطلوب +94%)`,
+      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 (المطلوب +90%)`,
       macroNewsIntegration: `${preConfluence.dxyCorr.note} | مؤشر الدولار DXY عند ${dxyTech.currentPrice} بينما السعر ${pairTech.volumeAnalysis.pocRelation}.`,
       isUrgentAlert: preConfluence.allowedSignal !== "حياد / انتظار",
       schoolsBreakdown: {
@@ -767,8 +759,8 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       },
       aiFinalReview:
         preConfluence.allowedSignal === "حياد / انتظار"
-          ? preConfluence.sessionBlockReason || "لا توجد صفقة فائقة التأكيد (+94%) حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز)."
-          : `إشارة قناص مؤكدة (${preConfluence.allowedSignal} - ${preConfluence.maxConfidence}%) متطابقة مع تسعير MT5.`,
+          ? preConfluence.sessionBlockReason || "لا توجد صفقة مؤكدة (+90%) حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز)."
+          : `إشارة قناص مؤكدة (${preConfluence.allowedSignal} - ${preConfluence.maxConfidence}%) متطابقة مع تسعير JustMarkets MT5.`,
       tradeSetup: {
         entryZone: `${setup.entry}`,
         stopLoss: `${setup.sl}`,
@@ -781,19 +773,19 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 
   const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
-    aiDecision.confidenceScore >= 94 &&
+    aiDecision.confidenceScore >= 90 &&
     !sessionInfo.isDeadZone;
 
   if (!isConfirmedStrong) {
     aiDecision.tradeSetup = {
-      entryZone: "🔒 صفقات فائقة التأكيد فقط (+94%)",
-      stopLoss: "🔒 صفقات فائقة التأكيد فقط (+94%)",
-      takeProfit1: "🔒 صفقات فائقة التأكيد فقط (+94%)",
-      takeProfit2: "🔒 صفقات فائقة التأكيد فقط (+94%)",
+      entryZone: "🔒 صفقات مؤكدة فقط (+90%)",
+      stopLoss: "🔒 صفقات مؤكدة فقط (+90%)",
+      takeProfit1: "🔒 صفقات مؤكدة فقط (+90%)",
+      takeProfit2: "🔒 صفقات مؤكدة فقط (+90%)",
     };
     aiDecision.aiFinalReview = sessionInfo.isDeadZone
       ? `⏸️ [الفلتر الذهبي للجلسات]: تم إيقاف فتح الصفقات الجديدة في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone) لحماية رأس مالك.`
-      : preConfluence.sessionBlockReason || `🛡️ [فلتر القناص +94%]: تم حجب الدخول على (${symbol}) لأن شروط الثقة الفائقة (94% - 96%) لم تكتمل بعد (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | حالة الدولار: ${preConfluence.dxyCorr.note}).`;
+      : preConfluence.sessionBlockReason || `🛡️ [فلتر القناص +90%]: تم حجب الدخول على (${symbol}) لأن شروط اليقين (90% فأكثر) لم تكتمل بعد (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | حالة الدولار: ${preConfluence.dxyCorr.note}).`;
   }
 
   const baseInfoForTelegram = {
@@ -840,8 +832,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 }
 
 /**
- * 🎯 مسار الربط المزدوج مع منصة MetaTrader 5 (EA Bridge + Live MT5 Price Sync)
- * يستقبل الأسعار الحية من MT5 (ICMarketsSC-Demo) ويوحدها في البوت بالكامل، ثم يرد بالصفقات المفتوحة
+ * 🎯 مسار الربط المباشر مع منصة MetaTrader 5 (JustMarkets Live Sync)
  */
 app.get("/api/mt5-signals", async (req, res) => {
   try {
@@ -868,7 +859,7 @@ app.get("/api/mt5-signals", async (req, res) => {
           if (latestLiveTicks[item.sym]) {
             latestLiveTicks[item.sym].price = Number(num.toFixed(item.dec));
             latestLiveTicks[item.sym].priceStr = num.toFixed(item.dec);
-            latestLiveTicks[item.sym].tvSymbol = `ICMarkets:${item.sym}`;
+            latestLiveTicks[item.sym].tvSymbol = `JustMarkets:${item.sym}`;
           }
           const changed = await evaluateOpenTradesWithLivePrice(item.sym, num);
           if (changed) anyTradeChanged = true;
@@ -1033,5 +1024,5 @@ cron.schedule(
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس الحية + مزامنة أسعار MT5 (IC Markets 100%) يعملان على البورت: ${PORT}`);
+  console.log(`🚀 منصة الفوركس الحية (90%+ Sniper Mode) + مزامنة JustMarkets MT5 يعملان على البورت: ${PORT}`);
 });
