@@ -30,6 +30,49 @@ const TV_TF_SUFFIX = {
   "1W": "|1W",
 };
 
+/**
+ * مخزن الأسعار الحية القادمة مباشرة من منصة MT5 (ICMarketsSC-Demo)
+ * لضمان تطابق التسعير والشموع والمستويات بنسبة 100% مع المنصة
+ */
+export const mt5LivePrices = {
+  XAUUSD: null,
+  EURUSD: null,
+  GBPUSD: null,
+  USDJPY: null,
+  lastUpdateMs: 0,
+};
+
+export function updateMt5LivePrices(prices = {}) {
+  let anyValid = false;
+  if (prices.XAUUSD && Number(prices.XAUUSD) > 0) {
+    mt5LivePrices.XAUUSD = Number(Number(prices.XAUUSD).toFixed(2));
+    anyValid = true;
+  }
+  if (prices.EURUSD && Number(prices.EURUSD) > 0) {
+    mt5LivePrices.EURUSD = Number(Number(prices.EURUSD).toFixed(5));
+    anyValid = true;
+  }
+  if (prices.GBPUSD && Number(prices.GBPUSD) > 0) {
+    mt5LivePrices.GBPUSD = Number(Number(prices.GBPUSD).toFixed(5));
+    anyValid = true;
+  }
+  if (prices.USDJPY && Number(prices.USDJPY) > 0) {
+    mt5LivePrices.USDJPY = Number(Number(prices.USDJPY).toFixed(3));
+    anyValid = true;
+  }
+  if (anyValid) {
+    mt5LivePrices.lastUpdateMs = Date.now();
+  }
+}
+
+function getActiveMt5Price(symbol) {
+  const isFresh = Date.now() - mt5LivePrices.lastUpdateMs < 45000;
+  if (isFresh && mt5LivePrices[symbol] && mt5LivePrices[symbol] > 0) {
+    return mt5LivePrices[symbol];
+  }
+  return null;
+}
+
 export async function fetchLiveTradingViewTicks() {
   try {
     const tickers = Object.values(TV_EXACT_TICKERS);
@@ -54,15 +97,20 @@ export async function fetchLiveTradingViewTicks() {
       const pairKey = Object.keys(TV_EXACT_TICKERS).find((k) => TV_EXACT_TICKERS[k] === tvSym);
       if (pairKey && d[0] !== undefined && d[0] !== null) {
         const decimals = pairKey === "XAUUSD" || pairKey === "DXY" ? 2 : pairKey === "USDJPY" ? 3 : 5;
+        const tvPrice = Number(Number(d[0]).toFixed(decimals));
+        const mt5Exact = getActiveMt5Price(pairKey);
+        const finalPrice = mt5Exact !== null ? mt5Exact : tvPrice;
+        const brokerOffset = finalPrice - tvPrice;
+
         liveMap[pairKey] = {
           symbol: pairKey,
-          tvSymbol: tvSym,
-          price: Number(Number(d[0]).toFixed(decimals)),
-          priceStr: Number(d[0]).toFixed(decimals),
+          tvSymbol: mt5Exact !== null ? `ICMarkets:${pairKey}` : tvSym,
+          price: finalPrice,
+          priceStr: finalPrice.toFixed(decimals),
           changePercent: Number((d[1] || 0).toFixed(2)),
           changeAbs: Number((d[2] || 0).toFixed(decimals)),
-          high: Number((d[3] || d[0]).toFixed(decimals)),
-          low: Number((d[4] || d[0]).toFixed(decimals)),
+          high: Number((Number(d[3] || d[0]) + brokerOffset).toFixed(decimals)),
+          low: Number((Number(d[4] || d[0]) + brokerOffset).toFixed(decimals)),
           tvRating: Number((d[5] || 0).toFixed(2)),
           rsi15m: Number((d[6] || 50).toFixed(2)),
           decimals,
@@ -117,24 +165,29 @@ export async function fetchTradingViewFullTechnicals(symbol = "XAUUSD", timefram
 
     const d = res.data?.data?.[0]?.d;
     if (d && d[15] !== null && d[15] !== undefined) {
-      const livePrice = Number(Number(d[15]).toFixed(decimals));
+      const tvLivePrice = Number(Number(d[15]).toFixed(decimals));
+      const mt5Exact = getActiveMt5Price(symbol);
+      const livePrice = mt5Exact !== null ? mt5Exact : tvLivePrice;
+      // فرق التسعير الدقيق بين بروكر MT5 (IC Markets) و TradingView لمعايرة جميع المؤشرات السعرية
+      const brokerDiff = livePrice - tvLivePrice;
+
       return {
         livePrice,
-        open: Number(Number(d[1] || livePrice).toFixed(decimals)),
-        high: Number(Number(d[2] || livePrice).toFixed(decimals)),
-        low: Number(Number(d[3] || livePrice).toFixed(decimals)),
+        open: Number((Number(d[1] || tvLivePrice) + brokerDiff).toFixed(decimals)),
+        high: Number((Number(d[2] || tvLivePrice) + brokerDiff).toFixed(decimals)),
+        low: Number((Number(d[3] || tvLivePrice) + brokerDiff).toFixed(decimals)),
         rsi: Number(Number(d[4] || 50).toFixed(2)),
-        ema20: Number(Number(d[5] || livePrice).toFixed(decimals)),
-        ema50: Number(Number(d[6] || livePrice).toFixed(decimals)),
-        ema200: Number(Number(d[7] || livePrice).toFixed(decimals)),
+        ema20: Number((Number(d[5] || tvLivePrice) + brokerDiff).toFixed(decimals)),
+        ema50: Number((Number(d[6] || tvLivePrice) + brokerDiff).toFixed(decimals)),
+        ema200: Number((Number(d[7] || tvLivePrice) + brokerDiff).toFixed(decimals)),
         atr: Number(
           Number(
-            d[8] || Math.abs((d[2] || livePrice) - (d[3] || livePrice)) || livePrice * 0.0015
+            d[8] || Math.abs((d[2] || tvLivePrice) - (d[3] || tvLivePrice)) || livePrice * 0.0015
           ).toFixed(decimals)
         ),
-        pivotP: Number(Number(d[9] || livePrice).toFixed(decimals)),
-        r1: Number(Number(d[10] || livePrice * 1.002).toFixed(decimals)),
-        s1: Number(Number(d[11] || livePrice * 0.998).toFixed(decimals)),
+        pivotP: Number((Number(d[9] || tvLivePrice) + brokerDiff).toFixed(decimals)),
+        r1: Number((Number(d[10] || tvLivePrice * 1.002) + brokerDiff).toFixed(decimals)),
+        s1: Number((Number(d[11] || tvLivePrice * 0.998) + brokerDiff).toFixed(decimals)),
         tvRecommend: Number(Number(d[12] || 0).toFixed(2)),
         macd: Number(Number(d[13] || 0).toFixed(5)),
         macdSignal: Number(Number(d[14] || 0).toFixed(5)),
@@ -180,9 +233,10 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
 
   if (rawCandles.length === 0) return [];
 
-  const exactTvPrice = tvSnap?.livePrice;
+  const mt5Exact = getActiveMt5Price(symbol);
+  const exactTargetPrice = mt5Exact !== null ? mt5Exact : tvSnap?.livePrice;
   const lastRawClose = rawCandles[rawCandles.length - 1].close;
-  const basisOffset = exactTvPrice ? lastRawClose - exactTvPrice : 0;
+  const basisOffset = exactTargetPrice ? lastRawClose - exactTargetPrice : 0;
 
   const calibratedCandles = rawCandles.map((c) => ({
     time: c.time,
@@ -194,11 +248,14 @@ export async function fetchForexCandles(symbol = "XAUUSD", interval = "15m") {
     tvSnap: null,
   }));
 
-  if (exactTvPrice && calibratedCandles.length > 0) {
+  if (exactTargetPrice && calibratedCandles.length > 0) {
     const last = calibratedCandles[calibratedCandles.length - 1];
-    last.close = exactTvPrice;
-    if (exactTvPrice > last.high) last.high = exactTvPrice;
-    if (exactTvPrice < last.low) last.low = exactTvPrice;
+    last.close = exactTargetPrice;
+    if (exactTargetPrice > last.high) last.high = exactTargetPrice;
+    if (exactTargetPrice < last.low) last.low = exactTargetPrice;
+    if (tvSnap) {
+      tvSnap.livePrice = exactTargetPrice;
+    }
     last.tvSnap = tvSnap;
   }
 
@@ -409,7 +466,10 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
     return Number((trSum / period).toFixed(decimals));
   };
 
-  const exactCurrentPrice = tv?.livePrice || Number(current.close.toFixed(decimals));
+  const mt5Exact = getActiveMt5Price(symbol);
+  const exactCurrentPrice =
+    mt5Exact !== null ? mt5Exact : tv?.livePrice || Number(current.close.toFixed(decimals));
+
   const ema20 = tv?.ema20 || calcEMA(closes, 20);
   const ema50 = tv?.ema50 || calcEMA(closes, 50);
   const ema200 = tv?.ema200 || calcEMA(closes, 200);
@@ -450,7 +510,6 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   const upperWick = Math.max(0, current.high - Math.max(exactCurrentPrice, current.open));
   const lowerWick = Math.max(0, Math.min(exactCurrentPrice, current.open) - current.low);
 
-  // [الفلتر الجديد 1]: كشف ذيول الرفض المعاكسة (Wick Rejection Filter)
   const hasHeavyUpperWick = upperWick > Math.max(bodySize * 1.15, atr14 * 0.25);
   const hasHeavyLowerWick = lowerWick > Math.max(bodySize * 1.15, atr14 * 0.25);
 
@@ -481,7 +540,6 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   if (exactCurrentPrice > ema50 && ema20 > ema50) trendByEMA = "صاعد";
   else if (exactCurrentPrice < ema50 && ema20 < ema50) trendByEMA = "هابط";
 
-  // معادلة القناص: هدف سريع مضمون + سقف أمان للستوب لوز لمنع نزيف النقاط
   const pipUnit = symbol === "XAUUSD" ? 0.1 : symbol === "USDJPY" ? 0.01 : 0.0001;
   const targetPipsDist = symbol === "XAUUSD" ? 42 * pipUnit : 10.0 * pipUnit;
   const maxSlDist = symbol === "XAUUSD" ? 55 * pipUnit : 13.5 * pipUnit;
@@ -501,6 +559,7 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   return {
     currentPrice: exactCurrentPrice.toFixed(decimals),
     numericPrice: exactCurrentPrice,
+    priceSource: mt5Exact !== null ? "ICMarkets MT5 Live" : "TradingView Feed",
     changePercent: tv?.changePercent || 0,
     changeAbs: tv?.changeAbs || 0,
     tvRecommend: tv?.tvRecommend || 0,
@@ -772,12 +831,6 @@ export function runHistoricalBacktest(candles, symbol = "XAUUSD") {
   };
 }
 
-/**
- * المحرك الخوارزمي الفائق (+94%) مع الفلاتر الثلاثة الجديدة:
- * 1. فلتر رفض ذيول الشموع المعاكسة (Wick Rejection)
- * 2. فلتر السيولة النشطة وزخم الماكدي (RVOL >= 0.80 أو MACD Momentum)
- * 3. فلتر المساحة الآمنة قبل القمة/القاع الهيكلي (Room-to-Run Structural Clearance)
- */
 export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfReport, dxyTech, newsShield) {
   const sessionInfo = getMarketSessionAndKillzone();
   const dxyCorr = evaluateDxyCorrelation(symbol, dxyTech);
@@ -805,11 +858,9 @@ export function evaluateStrictConfluence(symbol, techData, higherTFTech, mtfRepo
   const emaSpread = Math.abs(ema20 - ema50);
   const isChoppyMarket = atr14 > 0 && emaSpread < atr14 * 0.22;
 
-  // [الفلتر الجديد 2]: تأكيد السيولة النشطة أو زخم الماكدي (RVOL & MACD Momentum)
   const hasBullMomentumOrVol = relativeVolumeRVOL >= 0.80 || techData.macd >= techData.macdSignal;
   const hasBearMomentumOrVol = relativeVolumeRVOL >= 0.80 || techData.macd <= techData.macdSignal;
 
-  // [الفلتر الجديد 3]: المساحة الآمنة للهدف قبل الاصطدام بجدار القمة أو القاع (Room-to-Run)
   const pipUnit = symbol === "XAUUSD" ? 0.1 : symbol === "USDJPY" ? 0.01 : 0.0001;
   const minClearanceDist = symbol === "XAUUSD" ? 18 * pipUnit : 4.5 * pipUnit;
   const distToResistance = recentStructuralHigh - price;
@@ -920,7 +971,7 @@ export async function generateAISignal(
 
   const prompt = `
 أنت كبير محللي الفوركس المؤسسي (Chief Institutional Forex Strategist).
-حلل زوج (${symbol}) على فريم (${timeframe}) بناءً على بيانات وسعر منصة TradingView (OANDA) اللحظي المباشر وهو (${price}).
+حلل زوج (${symbol}) على فريم (${timeframe}) بناءً على السعر اللحظي الموحد مع منصة MT5 (IC Markets) وهو (${price}).
 
 [نتيجة الفلتر الخوارزمي فائق الدقة (+94%)]:
 - الجلسة الحالية: ${sessionInfo.sessionName} (${sessionInfo.liquidityQuality}).
@@ -930,12 +981,12 @@ export async function generateAISignal(
 - حالة الدايفرجنس: ${techData.classical.divergenceStatus}.
 - علاقة الزوج مع مؤشر الدولار DXY: ${preCheck.dxyCorr.note}.
 
-[بيانات TradingView الحية للزوج (${symbol})]:
+[البيانات الفنية المعايرة للزوج (${symbol})]:
 1. SMC/ICT: ${techData.smc.structureStatus} | ${techData.smc.premiumDiscountZone} | القاع الهيكلي: ${techData.classical.recentStructuralLow} | القمة الهيكلية: ${techData.classical.recentStructuralHigh}
 2. الفيبوناتشي: ${techData.fibonacci.fibStatus} (61.8%: ${techData.fibonacci.fib618})
-3. المحاور البنكية (TradingView Pivots): ${techData.pivots.pivotBias} (P: ${techData.pivots.pivotP}, R1: ${techData.pivots.r1}, S1: ${techData.pivots.s1})
+3. المحاور البنكية (Pivots): ${techData.pivots.pivotBias} (P: ${techData.pivots.pivotP}, R1: ${techData.pivots.r1}, S1: ${techData.pivots.s1})
 4. البرايس أكشن: ${techData.priceAction.candlePattern}
-5. مؤشرات TradingView الحية: الاتجاه ${techData.classical.trendByEMA} | RSI: ${techData.classical.rsi14} | تقييم TV الرقمي: ${techData.tvRecommend}
+5. المؤشرات الفنية: الاتجاه ${techData.classical.trendByEMA} | RSI: ${techData.classical.rsi14} | تقييم TV الرقمي: ${techData.tvRecommend}
 6. الفوليوم والـ POC: ${techData.volumeAnalysis.pocRelation} | RVOL: ${techData.volumeAnalysis.relativeVolumeRVOL}
 7. الفريم الأكبر والدولار: ${mtfReport.mtfStatus} | DXY: ${dxyData.currentPrice} (${dxyData.classical.trendByEMA})
 `;

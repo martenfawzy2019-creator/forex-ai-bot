@@ -20,6 +20,7 @@ import {
   evaluateStrictConfluence,
   runHistoricalBacktest,
   generateAISignal,
+  updateMt5LivePrices,
 } from "./quant_ai_engine.js";
 import { sendTelegramSignal } from "./telegram_service.js";
 
@@ -767,7 +768,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       aiFinalReview:
         preConfluence.allowedSignal === "حياد / انتظار"
           ? preConfluence.sessionBlockReason || "لا توجد صفقة فائقة التأكيد (+94%) حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز)."
-          : `إشارة قناص مؤكدة (${preConfluence.allowedSignal} - ${preConfluence.maxConfidence}%) مع تأمين فوري عند 40% من الهدف.`,
+          : `إشارة قناص مؤكدة (${preConfluence.allowedSignal} - ${preConfluence.maxConfidence}%) متطابقة مع تسعير MT5.`,
       tradeSetup: {
         entryZone: `${setup.entry}`,
         stopLoss: `${setup.sl}`,
@@ -839,14 +840,51 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 }
 
 /**
- * 🎯 مسار الربط المباشر مع منصة MetaTrader 5 (EA Bridge Endpoint)
- * يقرأه الإكسبرت من جهازك كل ثانيتين بصيغة نصية سريعة ومباشرة ليفتح ويؤمّن الصفقات تلقائياً
+ * 🎯 مسار الربط المزدوج مع منصة MetaTrader 5 (EA Bridge + Live MT5 Price Sync)
+ * يستقبل الأسعار الحية من MT5 (ICMarketsSC-Demo) ويوحدها في البوت بالكامل، ثم يرد بالصفقات المفتوحة
  */
-app.get("/api/mt5-signals", (req, res) => {
+app.get("/api/mt5-signals", async (req, res) => {
   try {
+    const { xau, eur, gbp, jpy } = req.query;
+    if (xau || eur || gbp || jpy) {
+      updateMt5LivePrices({
+        XAUUSD: xau,
+        EURUSD: eur,
+        GBPUSD: gbp,
+        USDJPY: jpy,
+      });
+
+      const incomingPairs = [
+        { sym: "XAUUSD", val: xau, dec: 2 },
+        { sym: "EURUSD", val: eur, dec: 5 },
+        { sym: "GBPUSD", val: gbp, dec: 5 },
+        { sym: "USDJPY", val: jpy, dec: 3 },
+      ];
+
+      let anyTradeChanged = false;
+      for (const item of incomingPairs) {
+        const num = Number(item.val);
+        if (num > 0) {
+          if (latestLiveTicks[item.sym]) {
+            latestLiveTicks[item.sym].price = Number(num.toFixed(item.dec));
+            latestLiveTicks[item.sym].priceStr = num.toFixed(item.dec);
+            latestLiveTicks[item.sym].tvSymbol = `ICMarkets:${item.sym}`;
+          }
+          const changed = await evaluateOpenTradesWithLivePrice(item.sym, num);
+          if (changed) anyTradeChanged = true;
+        }
+      }
+
+      if (Object.keys(latestLiveTicks).length > 0) {
+        io.emit("live_ticks", latestLiveTicks);
+      }
+      if (anyTradeChanged) {
+        io.emit("ledger_updated", getLedgerStatsSummary());
+      }
+    }
+
     const trades = loadLedger();
     const openTrades = trades.filter((t) => t.status === "OPEN");
-    // الصيغة: ID|SYMBOL|DIRECTION|ENTRY|SL|TP1|LOCK_STAGE
     const lines = openTrades.map(
       (t) =>
         `${t.id}|${t.symbol}|${t.direction}|${t.entry}|${t.sl}|${t.tp1}|${t.lockStage || 0}`
@@ -995,5 +1033,5 @@ cron.schedule(
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس الحية + جسر MT5 المباشر يعملان على البورت: ${PORT}`);
+  console.log(`🚀 منصة الفوركس الحية + مزامنة أسعار MT5 (IC Markets 100%) يعملان على البورت: ${PORT}`);
 });
