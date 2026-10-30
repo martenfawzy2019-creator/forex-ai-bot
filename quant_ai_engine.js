@@ -1640,7 +1640,7 @@ export async function generateAISignal(
   };
 
   // المرحلة الثانية: إرسال كل نتائج المدارس الـ 8 والأخبار والباك تيست لنموذج Gemini ليصيغ تحليله السنيور الخاص
-  try {
+ try {
     const prompt = `
 أنت "كبير محللي التداول المؤسسي" (Senior Forex Quant Strategist) بخبرة 15 عاماً.
 أنت تحلل الآن زوج (${symbol}) على فريم (${timeframe}) بسعر بروكر Exness MT5 الحي (${price}).
@@ -1667,17 +1667,40 @@ export async function generateAISignal(
 تجنب استخدام رموز < أو > في النص.
 `;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.3,
-      },
-    });
+    // 🆓 مصفوفة أحدث وأقوى الموديلات المجانية 100% على Google AI Studio
+    // تبدأ بالجيل الثالث الأحدث وتنتقل تلقائياً للذي يليه لو امتلأت كوتة الدقيقة
+    const freeSeniorModels = [
+      "gemini-3-flash-preview", // 1. أحدث موديل من الجيل الثالث (مجاني + ذكاء عالي + كوتة واسعة)
+      "gemini-2.5-pro",         // 2. موديل الـ Pro العميق للتفكير الاستراتيجي (مجاني في AI Studio)
+      "gemini-2.5-flash",       // 3. خط الدفاع المجاني المستقر (1500 طلب يومياً مجاناً)
+    ];
+
+    let response = null;
+    let usedModelName = "";
+
+    for (const modelName of freeSeniorModels) {
+      try {
+        response = await ai.models.generateContent({
+          model: modelName,
+          contents: prompt,
+          config: {
+            temperature: 0.2,
+          },
+        });
+        if (response && response.text) {
+          usedModelName = modelName;
+          break;
+        }
+      } catch (freeQuotaErr) {
+        // ينتقل للموديل المجاني التالي فوراً في نفس الثانية إذا واجه حد الدقيقة
+      }
+    }
 
     const customAiParagraph = response?.text ? response.text.trim() : null;
     const finalDecision = buildAutonomousSeniorAnalysis(
-      customAiParagraph ? `🧠 [رؤية السنيور AI المباشرة]: ${customAiParagraph}` : null
+      customAiParagraph
+        ? `🧠 [رؤية السنيور AI المباشرة (${usedModelName})]: ${customAiParagraph}`
+        : null
     );
 
     aiSignalCache.set(cacheKey, { timestamp: Date.now(), data: finalDecision });
