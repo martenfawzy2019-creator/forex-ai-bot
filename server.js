@@ -781,8 +781,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       summaryArabic: `${mtfReport.mtfStatus}`,
     };
   }
-
-  const isConfirmedStrong =
+const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
     aiDecision.confidenceScore >= 94 &&
     !sessionInfo.isDeadZone;
