@@ -794,13 +794,13 @@ const isConfirmedStrong =
       takeProfit2: "🔒 ينتظر اعتماد الـ AI (+94%)",
     };
 
-    // إذا كان هناك سبب حجب زمني/تذبذب ندمجه مع كلام الـ AI بدلاً من مسحه!
-    if (sessionInfo.isDeadZone && !aiDecision.aiFinalReview?.includes("قرار الذكاء الاصطناعي")) {
+    // 🧠 فرض ظهور تحليل التفكير الحقيقي الخاص بالـ AI دائماً وعدم إخفائه نهائياً
+    if (sessionInfo.isDeadZone) {
       aiDecision.aiFinalReview = `⏸️ [${sessionInfo.sessionName}]: ${aiDecision.aiFinalReview || sessionInfo.liquidityQuality}`;
-    } else if (!aiDecision.aiFinalReview) {
-      aiDecision.aiFinalReview =
-        preConfluence.sessionBlockReason ||
-        `🛡️ [فلتر القناص +94%]: تم حجب الدخول على (${symbol}) لعدم اكتمال شروط اليقين (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8).`;
+    } 
+    // إذا كتب الـ AI تحليلاً، نتركه كما هو، وإذا لم يكن موجوداً نضع رسالة تفصيلية
+    else if (!aiDecision.aiFinalReview || aiDecision.aiFinalReview.includes("لا توجد صفقة مؤكدة")) {
+      aiDecision.aiFinalReview = `🧠 [رؤية ونقاط الذكاء الاصطناعي المستقل]: توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 معايير. ${aiDecision.aiFinalReview || "الـ AI يراقب حركة الشموع والسيولة الحية بحذر بانتظار فرصة آمنة 100%."}`;
     }
   }
 
