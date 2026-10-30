@@ -794,11 +794,15 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       takeProfit1: "🔒 ينتظر اعتماد الـ AI (+94%)",
       takeProfit2: "🔒 ينتظر اعتماد الـ AI (+94%)",
     };
-    // نترك aiDecision.aiFinalReview كما كتبها الـ AI لكي تقرأ تفكيره وتحليله المباشر على الشاشة!
-  
-    aiDecision.aiFinalReview = sessionInfo.isDeadZone
-      ? `⏸️ [الفلتر الذهبي للجلسات]: تم إيقاف فتح الصفقات الجديدة في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone) لحماية رأس مالك.`
-      : preConfluence.sessionBlockReason || `🛡️ [فلتر القناص +90%]: تم حجب الدخول على (${symbol}) لأن شروط اليقين (90% فأكثر) لم تكتمل بعد (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | حالة الدولار: ${preConfluence.dxyCorr.note}).`;
+
+    // إذا كان هناك سبب حجب زمني/تذبذب ندمجه مع كلام الـ AI بدلاً من مسحه!
+    if (sessionInfo.isDeadZone && !aiDecision.aiFinalReview?.includes("قرار الذكاء الاصطناعي")) {
+      aiDecision.aiFinalReview = `⏸️ [${sessionInfo.sessionName}]: ${aiDecision.aiFinalReview || sessionInfo.liquidityQuality}`;
+    } else if (!aiDecision.aiFinalReview) {
+      aiDecision.aiFinalReview =
+        preConfluence.sessionBlockReason ||
+        `🛡️ [فلتر القناص +94%]: تم حجب الدخول على (${symbol}) لعدم اكتمال شروط اليقين (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8).`;
+    }
   }
 
   const baseInfoForTelegram = {
