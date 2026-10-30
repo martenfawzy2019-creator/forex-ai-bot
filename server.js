@@ -533,7 +533,7 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
   const conf = Number(aiDecision.confidenceScore || 0);
 
   // قبول الصفقات القوية بداية من ثقة 90% فأكثر
-  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 90;
+  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 94;
 
   if (isConfirmedSuperStrong) {
     const isBuy = sig === "صعود قوي";
@@ -616,6 +616,16 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
           };
           const tgRes = await sendTelegramSignal(tgPayload);
           if (tgRes && tgRes.sent) {
+            newTrade.telegramSent = true;
+          } else {
+            // محاولة احتياطية ثانية لإرسال تنبيه نصي مخصص لو فشل الإرسال العادي
+            await sendCustomTelegramMessage(
+              `🚨 <b>تنبيه صفقة جديدة (${symbol})</b>\n` +
+              `━━━━━━━━━━━━━━\n` +
+              `🔖 الكود: <b>${newTrade.tradeCode}</b> | الاتجاه: <b>${direction}</b>\n` +
+              `🎯 الدخول: <code>${numPrice}</code> | الثقة: <b>${conf}%</b>\n` +
+              `🛡️ الستوب: <code>${slVal}</code> | الهدف: <code>${tp1Val}</code>`
+            );
             newTrade.telegramSent = true;
           }
         } catch (tgErr) {
@@ -736,7 +746,8 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       sessionInfo,
       newsShield,
       dxyTech,
-      newsList
+      newsList,
+      pairCandles // <-- أضف هذا المتغير هنا ليرى الـ AI آخر 10 شموع ويفكر بها!
     );
   } catch (aiError) {
     const isBuy = preConfluence.allowedSignal === "صعود قوي";
@@ -773,16 +784,18 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 
   const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
-    aiDecision.confidenceScore >= 90 &&
+    aiDecision.confidenceScore >= 94 &&
     !sessionInfo.isDeadZone;
 
   if (!isConfirmedStrong) {
     aiDecision.tradeSetup = {
-      entryZone: "🔒 صفقات مؤكدة فقط (+90%)",
-      stopLoss: "🔒 صفقات مؤكدة فقط (+90%)",
-      takeProfit1: "🔒 صفقات مؤكدة فقط (+90%)",
-      takeProfit2: "🔒 صفقات مؤكدة فقط (+90%)",
+      entryZone: "🔒 ينتظر اعتماد الـ AI (+94%)",
+      stopLoss: "🔒 ينتظر اعتماد الـ AI (+94%)",
+      takeProfit1: "🔒 ينتظر اعتماد الـ AI (+94%)",
+      takeProfit2: "🔒 ينتظر اعتماد الـ AI (+94%)",
     };
+    // نترك aiDecision.aiFinalReview كما كتبها الـ AI لكي تقرأ تفكيره وتحليله المباشر على الشاشة!
+  
     aiDecision.aiFinalReview = sessionInfo.isDeadZone
       ? `⏸️ [الفلتر الذهبي للجلسات]: تم إيقاف فتح الصفقات الجديدة في فترة إغلاق البنوك واتساع السبريد (Rollover Dead-Zone) لحماية رأس مالك.`
       : preConfluence.sessionBlockReason || `🛡️ [فلتر القناص +90%]: تم حجب الدخول على (${symbol}) لأن شروط اليقين (90% فأكثر) لم تكتمل بعد (شراء: ${preConfluence.bullPoints}/8 | بيع: ${preConfluence.bearPoints}/8 | حالة الدولار: ${preConfluence.dxyCorr.note}).`;
