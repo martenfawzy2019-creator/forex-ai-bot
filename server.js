@@ -14,13 +14,14 @@ import {
   fetchForexCandles,
   fetchLiveTradingViewTicks,
   calculateAllIndicatorsAndSMC,
+  evaluateMTFAlignment,
   getMarketSessionAndKillzone,
   evaluateNewsShield,
-  evaluateMTFAlignment,
   evaluateStrictConfluence,
-  runHistoricalBacktest,
   generateAISignal,
+  runHistoricalBacktest,
   updateMt5LivePrices,
+  evaluateSmartTradeProtection,
 } from "./quant_ai_engine.js";
 import { sendTelegramSignal } from "./telegram_service.js";
 
@@ -39,6 +40,7 @@ const BACKUP_LEDGER_PATH = path.join(os.homedir(), "forex_permanent_ledger.bak.j
 const OLD_LOCAL_LEDGER = "./trades_ledger.json";
 
 const analysisCache = new Map();
+const latestPairTechMap = new Map(); // ذاكرة MHE لحفظ آخر تحليل فني وهيكل شموع لكل زوج
 let cachedDxyTech = null;
 let cachedNews = null;
 let lastMacroFetchTime = 0;
@@ -145,12 +147,17 @@ function extractNum(str) {
 
 loadLedger();
 
+/**
+ * 🛡️ متابعة الصفقات المفتوحة بنظام التأمين الذكي (Smart Reversal Protection + MHE/MFE)
+ * لا يؤمّن الصفقة عشوائياً في التصحيحات العادية، بل يتدخل فقط عند رصد انعكاس حقيقي أو الاقتراب الشديد من الهدف
+ */
 async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
   if (!livePriceNum || isNaN(livePriceNum)) return false;
   const trades = loadLedger();
   let updated = false;
   const nowMs = Date.now();
   const decimals = getSymbolDecimals(symbol);
+  const cachedTech = latestPairTechMap.get(symbol) || null;
 
   for (const t of trades) {
     if (t.status === "OPEN" && t.symbol === symbol) {
@@ -164,43 +171,92 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
       const targetDist = Math.abs(tp1 - entry);
       if (targetDist <= 0) continue;
 
+      // تتبع أقصى امتداد إيجابي للصفقة (MFE / MHE Tracking)
       if (t.direction === "BUY") {
         t.maxReachedPrice = Math.max(Number(t.maxReachedPrice || entry), livePriceNum);
-        const maxProgress = (t.maxReachedPrice - entry) / targetDist;
+      } else {
+        t.minReachedPrice = Math.min(Number(t.minReachedPrice || entry), livePriceNum);
+      }
 
-        if (maxProgress >= 0.70 && (t.lockStage || 0) < 3) {
-          t.sl = Number((entry + targetDist * 0.55).toFixed(decimals));
+      // فحص التأمين الذكي عبر عقل السنيور AI (يكتشف هل هناك انعكاس حقيقي أم مجرد تصحيح طبيعي)
+      const normalizedTradeForAI = {
+        symbol: t.symbol,
+        status: t.status,
+        direction: t.direction,
+        entryPrice: entry,
+        stopLoss: Number(t.sl),
+        takeProfit1: tp1,
+      };
+
+      const smartProtection = evaluateSmartTradeProtection(
+        normalizedTradeForAI,
+        livePriceNum,
+        cachedTech
+      );
+
+      // تتبع MHE الإضافي: إذا وصلت الصفقة لأكثر من 78% من الهدف ثم تراجعت بقوة عن قمتها، نحجز الربح ذكياً
+      const maxExcursionDist =
+        t.direction === "BUY"
+          ? Number(t.maxReachedPrice || entry) - entry
+          : entry - Number(t.minReachedPrice || entry);
+      const maxProgress = maxExcursionDist / targetDist;
+      const pullbackFromPeak =
+        t.direction === "BUY"
+          ? Number(t.maxReachedPrice || livePriceNum) - livePriceNum
+          : livePriceNum - Number(t.minReachedPrice || livePriceNum);
+
+      const mheReversalTrigger =
+        maxProgress >= 0.78 && pullbackFromPeak >= targetDist * 0.28 && (t.lockStage || 0) < 3;
+
+      if (smartProtection.shouldModifySL && smartProtection.newSL) {
+        const newSlNum = Number(Number(smartProtection.newSL).toFixed(decimals));
+        const currentSlNum = Number(t.sl);
+        const isBetterSL =
+          t.direction === "BUY" ? newSlNum > currentSlNum : newSlNum < currentSlNum;
+
+        if (isBetterSL && (t.lockStage || 0) < (smartProtection.newStage || 2)) {
+          t.sl = newSlNum;
           t.breakEvenSecured = true;
-          t.lockStage = 3;
-          const lockedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "BUY"));
-          t.closeReason = `🔒 جارية (محجوز +${lockedPips} Pips)`;
+          t.lockStage = smartProtection.newStage >= 2 ? 3 : 2;
+          const lockedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, t.direction));
+          t.closeReason =
+            t.lockStage >= 3
+              ? `🔒 جارية (ربح محجوز ذكياً +${lockedPips} Pips)`
+              : `🛡️ جارية (مؤمّنة ضد الانعكاس +${lockedPips} Pips)`;
           updated = true;
 
           await sendCustomTelegramMessage(
-            `🔒 <b>حجز أرباح تلقائي (Profit Lock)</b>\n` +
+            `🛡️ <b>تأمين ذكي من السنيور AI (${t.symbol})</b>\n` +
               `━━━━━━━━━━━━━━\n` +
-              `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
+              `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الفريم: <b>${t.timeframe}</b>\n` +
               `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
-              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
-          );
-        } else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
-          t.sl = Number((entry + targetDist * 0.15).toFixed(decimals));
-          t.breakEvenSecured = true;
-          t.lockStage = 2;
-          const securedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "BUY"));
-          t.closeReason = `🛡️ جارية (مؤمّنة +${securedPips} Pips)`;
-          updated = true;
-
-          await sendCustomTelegramMessage(
-            `🛡️ <b>تأمين صفقة سريع (Zero-Loss Secured)</b>\n` +
-              `━━━━━━━━━━━━━━\n` +
-              `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b> (${t.timeframe})\n` +
-              `📈 الاتجاه: <b>${t.signal}</b>\n` +
-              `🎯 الدخول: <code>${t.entry}</code> | السعر الآن: <code>${livePriceNum}</code> (<b>+${t.livePips} Pips</b>)\n` +
-              `🔒 <b>تم نقل الستوب إلى <code>${t.sl}</code> (+${securedPips} Pips) — مستحيل تخسر الآن!</b>`
+              `🔒 الستوب الجديد في MT5: <code>${t.sl}</code> (<b>+${lockedPips} Pips 🟢</b>)\n` +
+              `🧠 سبب التدخل: ${smartProtection.reason}`
           );
         }
+      } else if (mheReversalTrigger) {
+        const newSlNum =
+          t.direction === "BUY"
+            ? Number((entry + targetDist * 0.5).toFixed(decimals))
+            : Number((entry - targetDist * 0.5).toFixed(decimals));
+        t.sl = newSlNum;
+        t.breakEvenSecured = true;
+        t.lockStage = 3;
+        const lockedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, t.direction));
+        t.closeReason = `🔒 جارية (حماية MHE +${lockedPips} Pips)`;
+        updated = true;
 
+        await sendCustomTelegramMessage(
+          `🔒 <b>حجز أرباح ذكي بتقنية MHE (${t.symbol})</b>\n` +
+            `━━━━━━━━━━━━━━\n` +
+            `🔖 كود الصفقة: <b>${t.tradeCode}</b>\n` +
+            `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
+            `🛡️ الستوب الجديد في MT5: <code>${t.sl}</code> (<b>ربح محجوز +${lockedPips} Pips 🟢</b>)`
+        );
+      }
+
+      // فحص إغلاق الصفقة (هدف كامل أو ستوب/ربح محجوز)
+      if (t.direction === "BUY") {
         if (livePriceNum >= tp1) {
           const wonPips = Math.abs(calculatePips(t.symbol, entry, tp1, "BUY"));
           t.status = "WIN";
@@ -235,7 +291,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             updated = true;
 
             await sendCustomTelegramMessage(
-              `✅ <b>إغلاق صفقة على ربح محجوز (Trailing Profit)!</b>\n` +
+              `✅ <b>إغلاق صفقة على ربح محجوز ذكياً!</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق المحجوز: <code>${t.sl}</code>\n` +
@@ -254,7 +310,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             updated = true;
 
             await sendCustomTelegramMessage(
-              `🛡️ <b>إغلاق صفقة مؤمّنة بدون أي خسارة!</b>\n` +
+              `🛡️ <b>إغلاق صفقة مؤمّنة بعد كشف الانعكاس بدون خسارة!</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق: <code>${t.sl}</code>\n` +
@@ -283,42 +339,6 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
           }
         }
       } else if (t.direction === "SELL") {
-        t.minReachedPrice = Math.min(Number(t.minReachedPrice || entry), livePriceNum);
-        const maxProgress = (entry - t.minReachedPrice) / targetDist;
-
-        if (maxProgress >= 0.70 && (t.lockStage || 0) < 3) {
-          t.sl = Number((entry - targetDist * 0.55).toFixed(decimals));
-          t.breakEvenSecured = true;
-          t.lockStage = 3;
-          const lockedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "SELL"));
-          t.closeReason = `🔒 جارية (محجوز +${lockedPips} Pips)`;
-          updated = true;
-
-          await sendCustomTelegramMessage(
-            `🔒 <b>حجز أرباح تلقائي (Profit Lock)</b>\n` +
-              `━━━━━━━━━━━━━━\n` +
-              `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
-              `🎯 الدخول: <code>${t.entry}</code> ⬅️ السعر الآن: <code>${livePriceNum}</code>\n` +
-              `🛡️ الستوب الجديد: <code>${t.sl}</code> (<b>ربح مضمون +${lockedPips} Pips 🟢</b>)`
-          );
-        } else if (maxProgress >= 0.40 && (t.lockStage || 0) < 2) {
-          t.sl = Number((entry - targetDist * 0.15).toFixed(decimals));
-          t.breakEvenSecured = true;
-          t.lockStage = 2;
-          const securedPips = Math.abs(calculatePips(t.symbol, entry, t.sl, "SELL"));
-          t.closeReason = `🛡️ جارية (مؤمّنة +${securedPips} Pips)`;
-          updated = true;
-
-          await sendCustomTelegramMessage(
-            `🛡️ <b>تأمين صفقة سريع (Zero-Loss Secured)</b>\n` +
-              `━━━━━━━━━━━━━━\n` +
-              `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b> (${t.timeframe})\n` +
-              `📉 الاتجاه: <b>${t.signal}</b>\n` +
-              `🎯 الدخول: <code>${t.entry}</code> | السعر الآن: <code>${livePriceNum}</code> (<b>+${t.livePips} Pips</b>)\n` +
-              `🔒 <b>تم نقل الستوب إلى <code>${t.sl}</code> (+${securedPips} Pips) — مستحيل تخسر الآن!</b>`
-          );
-        }
-
         if (livePriceNum <= tp1) {
           const wonPips = Math.abs(calculatePips(t.symbol, entry, tp1, "SELL"));
           t.status = "WIN";
@@ -353,7 +373,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             updated = true;
 
             await sendCustomTelegramMessage(
-              `✅ <b>إغلاق صفقة على ربح محجوز (Trailing Profit)!</b>\n` +
+              `✅ <b>إغلاق صفقة على ربح محجوز ذكياً!</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق المحجوز: <code>${t.sl}</code>\n` +
@@ -372,7 +392,7 @@ async function evaluateOpenTradesWithLivePrice(symbol, livePriceNum) {
             updated = true;
 
             await sendCustomTelegramMessage(
-              `🛡️ <b>إغلاق صفقة مؤمّنة بدون أي خسارة!</b>\n` +
+              `🛡️ <b>إغلاق صفقة مؤمّنة بعد كشف الانعكاس بدون خسارة!</b>\n` +
                 `━━━━━━━━━━━━━━\n` +
                 `🔖 كود الصفقة: <b>${t.tradeCode}</b> | الزوج: <b>${t.symbol}</b>\n` +
                 `🎯 الدخول: <code>${t.entry}</code> ⬅️ الإغلاق: <code>${t.sl}</code>\n` +
@@ -532,8 +552,8 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
   const sig = (aiDecision.signal || "").trim();
   const conf = Number(aiDecision.confidenceScore || 0);
 
-  // قبول الصفقات القوية بداية من ثقة 90% فأكثر
-  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 94;
+  // قبول الصفقات المؤكدة من السنيور AI والمدارس الـ 8 بداية من ثقة 90% إلى 100%
+  const isConfirmedSuperStrong = (sig === "صعود قوي" || sig === "هبوط قوي") && conf >= 90;
 
   if (isConfirmedSuperStrong) {
     const isBuy = sig === "صعود قوي";
@@ -602,7 +622,7 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
           tp2: tp2Val || tp1Val,
           breakEvenSecured: false,
           status: "OPEN",
-          closeReason: "⏳ جارية الآن بالسوق",
+          closeReason: "⏳ جارية الآن بالسوق (مراقبة ذكية من الـ AI)",
           telegramSent: false,
         };
 
@@ -618,18 +638,28 @@ async function auditAndRecordSignal(symbol, timeframe, currentPrice, aiDecision,
           if (tgRes && tgRes.sent) {
             newTrade.telegramSent = true;
           } else {
-            // محاولة احتياطية ثانية لإرسال تنبيه نصي مخصص لو فشل الإرسال العادي
-            await sendCustomTelegramMessage(
-              `🚨 <b>تنبيه صفقة جديدة (${symbol})</b>\n` +
-              `━━━━━━━━━━━━━━\n` +
-              `🔖 الكود: <b>${newTrade.tradeCode}</b> | الاتجاه: <b>${direction}</b>\n` +
-              `🎯 الدخول: <code>${numPrice}</code> | الثقة: <b>${conf}%</b>\n` +
-              `🛡️ الستوب: <code>${slVal}</code> | الهدف: <code>${tp1Val}</code>`
+            const fallbackSent = await sendCustomTelegramMessage(
+              `🚨 <b>صفقة قناص جديدة معتمدة من السنيور AI (${symbol})</b>\n` +
+                `━━━━━━━━━━━━━━\n` +
+                `🔖 الكود: <b>${newTrade.tradeCode}</b> | الفريم: <b>${timeframe}</b>\n` +
+                `📈 القرار: <b>${sig} (${direction})</b> | الثقة: <b>${conf}%</b>\n` +
+                `🎯 سعر الدخول (Exness MT5): <code>${numPrice}</code>\n` +
+                `🛡️ وقف الخسارة: <code>${slVal}</code>\n` +
+                `💰 الهدف الأول: <code>${tp1Val}</code> (+${expectedPips} Pips)\n` +
+                `━━━━━━━━━━━━━━\n` +
+                `🧠 <b>رؤية السنيور AI:</b>\n${String(aiDecision.aiFinalReview || "").replace(/[<>&]/g, "")}`
             );
-            newTrade.telegramSent = true;
+            newTrade.telegramSent = Boolean(fallbackSent);
           }
         } catch (tgErr) {
           console.error("Telegram Send Error:", tgErr.message);
+          const fallbackSent = await sendCustomTelegramMessage(
+            `🚨 <b>تنبيه صفقة جديدة (${symbol})</b>\n` +
+              `🔖 الكود: <b>${newTrade.tradeCode}</b> | الاتجاه: <b>${direction}</b>\n` +
+              `🎯 الدخول: <code>${numPrice}</code> | الثقة: <b>${conf}%</b>\n` +
+              `🛡️ الستوب: <code>${slVal}</code> | الهدف: <code>${tp1Val}</code>`
+          );
+          newTrade.telegramSent = Boolean(fallbackSent);
         }
 
         trades.push(newTrade);
@@ -703,7 +733,7 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
 
   if (!forceRefresh && analysisCache.has(cacheKey)) {
     const cachedItem = analysisCache.get(cacheKey);
-    if (now - cachedItem.time < 60 * 1000) {
+    if (now - cachedItem.time < 45 * 1000) {
       if (latestLiveTicks[symbol]) {
         cachedItem.data.currentPrice = latestLiveTicks[symbol].priceStr;
         cachedItem.data.changePercent = latestLiveTicks[symbol].changePercent;
@@ -726,6 +756,8 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
   ]);
 
   const pairTech = calculateAllIndicatorsAndSMC(pairCandles, symbol);
+  latestPairTechMap.set(symbol, pairTech); // حفظ أحدث هيكل فني للزوج لاستخدامه في التأمين الذكي MHE
+
   const higherTFTech = calculateAllIndicatorsAndSMC(higherCandles, symbol);
   const { dxyTech, newsList } = macroData;
 
@@ -747,31 +779,29 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       newsShield,
       dxyTech,
       newsList,
-      pairCandles // <-- أضف هذا المتغير هنا ليرى الـ AI آخر 10 شموع ويفكر بها!
+      pairCandles
     );
   } catch (aiError) {
     const isBuy = preConfluence.allowedSignal === "صعود قوي";
     const setup = isBuy ? pairTech.smartLevels.buy : pairTech.smartLevels.sell;
+    const maxSchools = Math.max(preConfluence.bullPoints, preConfluence.bearPoints);
 
     aiDecision = {
       signal: preConfluence.allowedSignal,
       confidenceScore: preConfluence.maxConfidence,
-      consensusCount: `توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 (المطلوب +90%)`,
-      macroNewsIntegration: `${preConfluence.dxyCorr.note} | مؤشر الدولار DXY عند ${dxyTech.currentPrice} بينما السعر ${pairTech.volumeAnalysis.pocRelation}.`,
+      consensusCount: `🧠 تحليل السنيور AI: توافق ${maxSchools} من 8 مدارس`,
+      macroNewsIntegration: `🌍 ${preConfluence.dxyCorr.note} | ${backtestReport.selfLearningSummary || ""}`,
       isUrgentAlert: preConfluence.allowedSignal !== "حياد / انتظار",
       schoolsBreakdown: {
-        smcAndICT: `${pairTech.smc.structureStatus} | قاع هيكلي: ${pairTech.classical.recentStructuralLow} | قمة: ${pairTech.classical.recentStructuralHigh}`,
+        smcAndICT: `${pairTech.smc.structureStatus} | قاع: ${pairTech.classical.recentStructuralLow} | قمة: ${pairTech.classical.recentStructuralHigh}`,
         fibonacciAndOTE: `${pairTech.fibonacci.fibStatus}`,
         pivotPointsBank: `${pairTech.pivots.pivotBias}`,
         priceActionSupplyDemand: `${pairTech.priceAction.candlePattern}`,
-        classicalTA: `الاتجاه ${pairTech.classical.trendByEMA} | RSI: ${pairTech.classical.rsi14} | ${pairTech.classical.divergenceStatus}`,
+        classicalTA: `الاتجاه ${pairTech.classical.trendByEMA} | ADX: ${pairTech.classical.adx14} | RSI: ${pairTech.classical.rsi14}`,
         volumeAndVWAP: `${pairTech.volumeAnalysis.pocRelation}`,
         macroAndFedNews: `${mtfReport.mtfStatus} | ${preConfluence.dxyCorr.note}`,
       },
-      aiFinalReview:
-        preConfluence.allowedSignal === "حياد / انتظار"
-          ? preConfluence.sessionBlockReason || "لا توجد صفقة مؤكدة (+90%) حالياً (تم تفعيل درع الحماية لمنع ضرب الستوب لوز)."
-          : `إشارة قناص مؤكدة (${preConfluence.allowedSignal} - ${preConfluence.maxConfidence}%) متطابقة مع تسعير JustMarkets MT5.`,
+      aiFinalReview: `🧠 [تحليل السنيور AI المباشر على تسعير Exness MT5 (${pairTech.currentPrice})]: توافق المدارس حالياً هو (${preConfluence.bullPoints}/8 شراء مقابل ${preConfluence.bearPoints}/8 بيع). ${backtestReport.selfLearningSummary || ""}`,
       tradeSetup: {
         entryZone: `${setup.entry}`,
         stopLoss: `${setup.sl}`,
@@ -781,27 +811,20 @@ async function runFullForexAnalysis(symbol = "XAUUSD", timeframe = "15m", forceR
       summaryArabic: `${mtfReport.mtfStatus}`,
     };
   }
-const isConfirmedStrong =
+
+  const isConfirmedStrong =
     (aiDecision.signal === "صعود قوي" || aiDecision.signal === "هبوط قوي") &&
-    aiDecision.confidenceScore >= 94 &&
+    aiDecision.confidenceScore >= 90 &&
     !sessionInfo.isDeadZone;
 
   if (!isConfirmedStrong) {
     aiDecision.tradeSetup = {
-      entryZone: "🔒 ينتظر اعتماد الـ AI (+94%)",
-      stopLoss: "🔒 ينتظر اعتماد الـ AI (+94%)",
-      takeProfit1: "🔒 ينتظر اعتماد الـ AI (+94%)",
-      takeProfit2: "🔒 ينتظر اعتماد الـ AI (+94%)",
+      entryZone: "🔒 ينتظر إجماع 6/8 مدارس (+90%)",
+      stopLoss: "🔒 ينتظر إجماع 6/8 مدارس (+90%)",
+      takeProfit1: "🔒 ينتظر إجماع 6/8 مدارس (+90%)",
+      takeProfit2: "🔒 ينتظر إجماع 6/8 مدارس (+90%)",
     };
-
-    // 🧠 فرض ظهور تحليل التفكير الحقيقي الخاص بالـ AI دائماً وعدم إخفائه نهائياً
-    if (sessionInfo.isDeadZone) {
-      aiDecision.aiFinalReview = `⏸️ [${sessionInfo.sessionName}]: ${aiDecision.aiFinalReview || sessionInfo.liquidityQuality}`;
-    } 
-    // إذا كتب الـ AI تحليلاً، نتركه كما هو، وإذا لم يكن موجوداً نضع رسالة تفصيلية
-    else if (!aiDecision.aiFinalReview || aiDecision.aiFinalReview.includes("لا توجد صفقة مؤكدة")) {
-      aiDecision.aiFinalReview = `🧠 [رؤية ونقاط الذكاء الاصطناعي المستقل]: توافق ${Math.max(preConfluence.bullPoints, preConfluence.bearPoints)} من 8 معايير. ${aiDecision.aiFinalReview || "الـ AI يراقب حركة الشموع والسيولة الحية بحذر بانتظار فرصة آمنة 100%."}`;
-    }
+    // نحتفظ بتحليل السنيور AI المكتوب كما هو 100% دون استبداله بأي جملة ثابتة!
   }
 
   const baseInfoForTelegram = {
@@ -848,7 +871,7 @@ const isConfirmedStrong =
 }
 
 /**
- * 🎯 مسار الربط المباشر مع منصة MetaTrader 5 (JustMarkets Live Sync)
+ * 🎯 مسار الربط المباشر مع منصة MetaTrader 5 (Exness Live Sync)
  */
 app.get("/api/mt5-signals", async (req, res) => {
   try {
@@ -875,7 +898,7 @@ app.get("/api/mt5-signals", async (req, res) => {
           if (latestLiveTicks[item.sym]) {
             latestLiveTicks[item.sym].price = Number(num.toFixed(item.dec));
             latestLiveTicks[item.sym].priceStr = num.toFixed(item.dec);
-            latestLiveTicks[item.sym].tvSymbol = `JustMarkets:${item.sym}`;
+            latestLiveTicks[item.sym].tvSymbol = `Exness_MT5:${item.sym}`;
           }
           const changed = await evaluateOpenTradesWithLivePrice(item.sym, num);
           if (changed) anyTradeChanged = true;
@@ -994,6 +1017,7 @@ app.get("/api/scan-all", async (req, res) => {
           fetchForexCandles(sym, higherTFName),
         ]);
         const tech = calculateAllIndicatorsAndSMC(candles, sym);
+        latestPairTechMap.set(sym, tech);
         const highTech = calculateAllIndicatorsAndSMC(highCandles, sym);
         const mtf = evaluateMTFAlignment(tech, highTech, higherTFName);
         const conf = evaluateStrictConfluence(sym, tech, highTech, mtf, dxyTech, newsShield);
@@ -1040,5 +1064,5 @@ cron.schedule(
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 منصة الفوركس الحية (90%+ Sniper Mode) + مزامنة JustMarkets MT5 يعملان على البورت: ${PORT}`);
+  console.log(`🚀 منصة الفوركس الحية (Senior Quant 8-Schools AI + MHE) + مزامنة Exness MT5 يعملان على البورت: ${PORT}`);
 });
