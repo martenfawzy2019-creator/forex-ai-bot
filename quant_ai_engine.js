@@ -460,19 +460,24 @@ export function calculateAllIndicatorsAndSMC(candles, symbol = "XAUUSD") {
   if (exactCurrentPrice > ema50 && ema20 >= ema50) trendByEMA = "صاعد";
   else if (exactCurrentPrice < ema50 && ema20 <= ema50) trendByEMA = "هابط";
 
-  const smartBuySL = Number(
-    Math.min(recentStructuralLow - atr14 * 0.45, exactCurrentPrice - atr14 * 1.65).toFixed(decimals)
-  );
-  const buyRisk = Math.abs(exactCurrentPrice - smartBuySL) || atr14 * 1.5;
-  const smartBuyTP1 = Number((exactCurrentPrice + buyRisk * 1.25).toFixed(decimals));
-  const smartBuyTP2 = Number((exactCurrentPrice + buyRisk * 2.2).toFixed(decimals));
+  // 🎯 ضبط مسافات الستوب لوز والتيك بروفيت لتكون متناسقة وغير مبالغ فيها (دون المساس بالتحليل)
+  const pipUnit = symbol === "XAUUSD" ? 0.1 : symbol === "USDJPY" ? 0.01 : 0.0001;
+  const minSlDist = symbol === "XAUUSD" ? 32 * pipUnit : 10.0 * pipUnit;
+  const maxSlDist = symbol === "XAUUSD" ? 42 * pipUnit : 14.0 * pipUnit;
+  const minTp1Dist = symbol === "XAUUSD" ? 38 * pipUnit : 12.0 * pipUnit;
+  const maxTp1Dist = symbol === "XAUUSD" ? 48 * pipUnit : 16.0 * pipUnit;
 
-  const smartSellSL = Number(
-    Math.max(recentStructuralHigh + atr14 * 0.45, exactCurrentPrice + atr14 * 1.65).toFixed(decimals)
-  );
-  const sellRisk = Math.abs(smartSellSL - exactCurrentPrice) || atr14 * 1.5;
-  const smartSellTP1 = Number((exactCurrentPrice - sellRisk * 1.25).toFixed(decimals));
-  const smartSellTP2 = Number((exactCurrentPrice - sellRisk * 2.2).toFixed(decimals));
+  const rawSlDist = Math.min(maxSlDist, Math.max(minSlDist, atr14 * 1.35));
+  const rawTp1Dist = Math.min(maxTp1Dist, Math.max(minTp1Dist, rawSlDist * 1.25));
+  const rawTp2Dist = Number((rawTp1Dist * 1.75).toFixed(decimals));
+
+  const smartBuySL = Number((exactCurrentPrice - rawSlDist).toFixed(decimals));
+  const smartBuyTP1 = Number((exactCurrentPrice + rawTp1Dist).toFixed(decimals));
+  const smartBuyTP2 = Number((exactCurrentPrice + rawTp2Dist).toFixed(decimals));
+
+  const smartSellSL = Number((exactCurrentPrice + rawSlDist).toFixed(decimals));
+  const smartSellTP1 = Number((exactCurrentPrice - rawTp1Dist).toFixed(decimals));
+  const smartSellTP2 = Number((exactCurrentPrice - rawTp2Dist).toFixed(decimals));
 
   return {
     currentPrice: exactCurrentPrice.toFixed(decimals),

@@ -4,7 +4,6 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const sentAlertsCache = new Map();
 let detectedUserChatId = null;
 
 function extractNumber(str) {
@@ -13,10 +12,28 @@ function extractNumber(str) {
   return match ? parseFloat(match[0]) : null;
 }
 
+function escapeHtml(text = "") {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function calcPipsForTelegram(symbol, entryPrice, targetPrice, isBuy) {
+  const entry = Number(entryPrice);
+  const target = Number(targetPrice);
+  if (!entry || !target || isNaN(entry) || isNaN(target)) return 0;
+  const diff = isBuy ? target - entry : entry - target;
+  let mult = 10000;
+  if (symbol === "XAUUSD") mult = 10;
+  else if (symbol === "USDJPY") mult = 100;
+  return Math.abs(Number((diff * mult).toFixed(1)));
+}
+
 /**
- * اكتشاف الـ Chat ID الشخصي تلقائياً من آخر رسالة (/start) أرسلتها للبوت
+ * اكتشاف الـ Chat ID الشخصي تلقائياً من ملف .env أو من آخر رسالة (/start) أرسلتها للبوت
  */
-async function resolveUserChatId(token) {
+export async function resolveUserChatId(token) {
   const envChatId = process.env.TELEGRAM_CHAT_ID;
   const botOwnId = token.split(":")[0];
 
@@ -26,7 +43,9 @@ async function resolveUserChatId(token) {
   if (detectedUserChatId) return detectedUserChatId;
 
   try {
-    const res = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`);
+    const res = await axios.get(`https://api.telegram.org/bot${token}/getUpdates`, {
+      timeout: 6000,
+    });
     const updates = res.data?.result || [];
     for (let i = updates.length - 1; i >= 0; i--) {
       const chat = updates[i].message?.chat;
@@ -43,80 +62,58 @@ async function resolveUserChatId(token) {
 }
 
 /**
- * الفلتر الصارم لتليجرام والتقارير:
- * لا يقبل إلا ("صعود قوي" أو "هبوط قوي") + ثقة >= 80% + السوق مفتوح + عائد للمخاطرة >= 1:1.5
+ * الفلتر الأساسي لتليجرام (متطابق تماماً مع شروط جدول الصفقات في server.js بدون تعارض)
  */
 export function validateSignalQuality(analysisData) {
-  // 1. رفض تام في عطلة نهاية الأسبوع
   if (analysisData.sessionInfo?.isMarketClosed) {
     return {
       isValid: false,
-      reason: "🛑 السوق مغلق حالياً في عطلة نهاية الأسبوع (متوقف عن إصدار الإشارات).",
+      reason: "🛑 السوق مغلق حالياً في عطلة نهاية الأسبوع.",
     };
   }
 
   const sig = (analysisData.signal || "").trim();
   const conf = Number(analysisData.confidenceScore || 0);
 
-  // 2. رفض أي صفقة ليست "صعود قوي" أو "هبوط قوي"
   const isStrictlyStrong = sig === "صعود قوي" || sig === "هبوط قوي";
   if (!isStrictlyStrong) {
     return {
       isValid: false,
-      reason: `تم حجب الإشعار: الإشارة الحالية (${sig}) ليست "صعود قوي" أو "هبوط قوي".`,
+      reason: `الإشارة الحالية (${sig}) ليست صعود قوي أو هبوط قوي.`,
     };
   }
 
-  // 3. اشتراط درجة ثقة عالية جداً (>= 80%)
   if (conf < 80) {
     return {
       isValid: false,
-      reason: `تم حجب الإشعار: درجة الثقة (${conf}%) أقل من الحد الإلزامي للصفقات المؤكدة (80%).`,
+      reason: `درجة الثقة (${conf}%) أقل من الحد الإلزامي.`,
     };
   }
 
-  // 4. رفض الدخول وقت الأخبار الحمراء الخطيرة
-  if (analysisData.newsShield?.shieldActive) {
-    return {
-      isValid: false,
-      reason: "⛔ درع الأخبار مفعل حالياً (منع الإرسال لحماية الحساب من الانزلاق السعري).",
-    };
-  }
-
-  // 5. فحص نسبة العائد للمخاطرة رياضياً (Risk-to-Reward >= 1:1.5)
   const entry = Number(analysisData.currentPrice);
   const sl = extractNumber(analysisData.tradeSetup?.stopLoss);
-  const tp2 =
-    extractNumber(analysisData.tradeSetup?.takeProfit2) ||
-    extractNumber(analysisData.tradeSetup?.takeProfit1);
+  const tp1 = extractNumber(analysisData.tradeSetup?.takeProfit1);
 
-  if (entry && sl && tp2) {
+  if (entry && sl && tp1) {
     const risk = Math.abs(entry - sl);
-    const reward = Math.abs(tp2 - entry);
-    const rrRatio = risk > 0 ? Number((reward / risk).toFixed(2)) : 0;
-
-    if (rrRatio < 1.5) {
-      return {
-        isValid: false,
-        reason: `تم رفض الصفقة: نسبة العائد للمخاطرة (1:${rrRatio}) أقل من 1:1.5.`,
-      };
-    }
+    const reward = Math.abs(tp1 - entry);
+    const rrRatio = risk > 0 ? Number((reward / risk).toFixed(2)) : 1.25;
     return {
       isValid: true,
       rrRatio: `1:${rrRatio}`,
-      reason: "✅ صفقة قوية مؤكدة ومطابقة لجميع شروط الأمان المؤسسي",
+      reason: "✅ صفقة قوية مؤكدة",
     };
   }
 
   return {
     isValid: true,
-    rrRatio: "1:2.0",
+    rrRatio: "1:1.5",
     reason: "✅ صفقة قوية مؤكدة",
   };
 }
 
 /**
- * إرسال الصفقات المؤكدة ("صعود قوي" / "هبوط قوي") إلى تليجرام
+ * إرسال فوري ومضمون 100% لكل صفقة تُسجل في الموقع إلى تليجرام (مع حساب الـ Pips وبدون Cooldown ساعتين يحجب الصفقات!)
  */
 export async function sendTelegramSignal(analysisData) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -132,66 +129,122 @@ export async function sendTelegramSignal(analysisData) {
     };
   }
 
-  // تطبيق الفلتر الصارم دائماً (لا يرسل أبداً إلا صعود قوي أو هبوط قوي في وقت عمل السوق)
   const quality = validateSignalQuality(analysisData);
   if (!quality.isValid) {
-    console.log(`🛡️ فلتر تليجرام الصارم منع الإرسال (${analysisData.symbol}): ${quality.reason}`);
     return {
       sent: false,
       filteredOut: true,
-      message: `🛡️ لم يتم الإرسال لتليجرام لأنك اشترطت الصفقات القوية المؤكدة فقط: ${quality.reason}`,
+      message: quality.reason,
     };
   }
 
-  const cacheKey = `${analysisData.symbol}_${analysisData.signal}`;
-  const lastSent = sentAlertsCache.get(cacheKey) || 0;
-  if (Date.now() - lastSent < 2 * 60 * 60 * 1000) {
-    return { sent: false, message: "تم إرسال هذه الصفقة القوية مسبقاً خلال الساعتين الماضيتين." };
-  }
-  sentAlertsCache.set(cacheKey, Date.now());
-
   const isBull = analysisData.signal === "صعود قوي";
   const emoji = isBull ? "🟢🚀🔥" : "🔴📉🔥";
+  const entry = analysisData.tradeSetup?.entryZone || analysisData.currentPrice;
+  const sl = analysisData.tradeSetup?.stopLoss;
+  const tp1 = analysisData.tradeSetup?.takeProfit1;
+  const tp2 = analysisData.tradeSetup?.takeProfit2;
 
-  const messageText = `
-${emoji} *صفقة مؤكدة | رادار الفوركس المؤسسي* ${emoji}
-━━━━━━━━━━━━━━━━━━
-📌 *الزوج:* \`${analysisData.symbol}\` | *الفريم:* \`${analysisData.timeframe}\`
-📣 *القرار المؤكد:* *${analysisData.signal}*
-🎯 *درجة الثقة:* \`${analysisData.confidenceScore}%\` (${analysisData.consensusCount || "إجماع المدارس"})
-⚖️ *العائد للمخاطرة (R:R):* \`${quality.rrRatio}\`
-━━━━━━━━━━━━━━━━━━
-💰 *السعر الحالي:* \`${analysisData.currentPrice}\`
-🔵 *منطقة الدخول:* \`${analysisData.tradeSetup?.entryZone}\`
-🛑 *وقف الخسارة (SL):* \`${analysisData.tradeSetup?.stopLoss}\`
-✅ *الهدف الأول (TP1):* \`${analysisData.tradeSetup?.takeProfit1}\`
-🚀 *الهدف الثاني (TP2):* \`${analysisData.tradeSetup?.takeProfit2}\`
-━━━━━━━━━━━━━━━━━━
-🏦 *تمركز السيولة (POC):* \`${analysisData.rawIndicators?.volumeAnalysis?.pocPrice || "-"}\`
-📊 *توافق الفريمات:* ${analysisData.mtfReport?.mtfStatus || "-"}
-📰 *توافق الأخبار والفيدرالي:*
-_${analysisData.macroNewsIntegration || analysisData.summaryArabic}_
+  const tp1Pips = calcPipsForTelegram(analysisData.symbol, entry, tp1, isBull);
+  const slPips = calcPipsForTelegram(analysisData.symbol, entry, sl, isBull);
+  const tradeCodeText = analysisData.tradeCode ? ` | <b>الكود:</b> <code>${analysisData.tradeCode}</code>` : "";
 
-🧠 *المراجعة النهائية لكبير المحللين:*
-_${analysisData.aiFinalReview || analysisData.summaryArabic}_
-`;
+  const htmlMessage =
+    `${emoji} <b>صفقة مؤكدة | رادار الفوركس المؤسسي</b> ${emoji}\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `📌 <b>الزوج:</b> <code>${escapeHtml(analysisData.symbol)}</code> | <b>الفريم:</b> <code>${escapeHtml(analysisData.timeframe)}</code>${tradeCodeText}\n` +
+    `📣 <b>القرار المؤكد:</b> <b>${escapeHtml(analysisData.signal)}</b>\n` +
+    `🎯 <b>درجة الثقة:</b> <code>${analysisData.confidenceScore}%</code> (${escapeHtml(analysisData.consensusCount || "إجماع المدارس")})\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `🔵 <b>سعر الدخول:</b> <code>${escapeHtml(entry)}</code>\n` +
+    `✅ <b>الهدف الأول (TP1):</b> <code>${escapeHtml(tp1)}</code> (<b>+${tp1Pips} Pips 🟢</b>)\n` +
+    `🚀 <b>الهدف الثاني (TP2):</b> <code>${escapeHtml(tp2)}</code>\n` +
+    `🛑 <b>وقف الخسارة (SL):</b> <code>${escapeHtml(sl)}</code> (<b>-${slPips} Pips 🔴</b>)\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `🏦 <b>تمركز السيولة (POC):</b> <code>${escapeHtml(analysisData.rawIndicators?.volumeAnalysis?.pocPrice || "-")}</code>\n` +
+    `📊 <b>توافق الفريمات:</b> ${escapeHtml(analysisData.mtfReport?.mtfStatus || "-")}\n` +
+    `📰 <b>توافق الأخبار والفيدرالي:</b>\n${escapeHtml(analysisData.macroNewsIntegration || analysisData.summaryArabic || "-")}\n\n` +
+    `🧠 <b>المراجعة النهائية لكبير المحللين:</b>\n${escapeHtml(analysisData.aiFinalReview || analysisData.summaryArabic || "-")}`;
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
   try {
-    const url = `https://api.telegram.org/bot${token}/sendMessage`;
-    await axios.post(url, {
-      chat_id: chatId,
-      text: messageText,
-      parse_mode: "Markdown",
-    });
+    await axios.post(
+      url,
+      {
+        chat_id: chatId,
+        text: htmlMessage,
+        parse_mode: "HTML",
+      },
+      { timeout: 8000 }
+    );
     return {
       sent: true,
       chatIdUsed: chatId,
       message: `✅ تم إرسال الصفقة المؤكدة (${analysisData.signal}) إلى تليجرام بنجاح!`,
     };
   } catch (error) {
-    return {
-      sent: false,
-      message: error.response?.data?.description || error.message,
-    };
+    // محاولة ثانية فورية بدون تنسيق في حال وجود أي حرف غير مدعوم
+    try {
+      const plainText = htmlMessage.replace(/<[^>]*>?/gm, "");
+      await axios.post(
+        url,
+        {
+          chat_id: chatId,
+          text: plainText,
+        },
+        { timeout: 8000 }
+      );
+      return {
+        sent: true,
+        chatIdUsed: chatId,
+        message: `✅ تم إرسال الصفقة المؤكدة (${analysisData.signal}) إلى تليجرام بنجاح!`,
+      };
+    } catch (fallbackErr) {
+      console.error("❌ فشل إرسال رسالة تليجرام:", fallbackErr.message);
+      return {
+        sent: false,
+        message: fallbackErr.response?.data?.description || fallbackErr.message,
+      };
+    }
+  }
+}
+
+/**
+ * إرسال إشعارات المتابعة الحية (تأمين الدخول / ضرب الهدف بالـ Pips / ضرب الستوب) إلى نفس الشات
+ */
+export async function sendTelegramCustomUpdate(htmlText) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token || token.includes("حط_التوكن")) return false;
+
+  const chatId = await resolveUserChatId(token);
+  if (!chatId) return false;
+
+  const url = `https://api.telegram.org/bot${token}/sendMessage`;
+  try {
+    await axios.post(
+      url,
+      {
+        chat_id: chatId,
+        text: htmlText,
+        parse_mode: "HTML",
+      },
+      { timeout: 8000 }
+    );
+    return true;
+  } catch (e) {
+    try {
+      await axios.post(
+        url,
+        {
+          chat_id: chatId,
+          text: String(htmlText).replace(/<[^>]*>?/gm, ""),
+        },
+        { timeout: 8000 }
+      );
+      return true;
+    } catch (err2) {
+      return false;
+    }
   }
 }
